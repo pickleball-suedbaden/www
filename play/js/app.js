@@ -6,6 +6,7 @@
 import * as S from './session.js';
 import { t, setLang, getLang, STRINGS } from './i18n.js';
 import * as store from './store.js';
+import * as hub from './hub.js';
 import { unlockAudio, audioReady, play } from './audio.js';
 
 const DISPLAY = location.hash === '#display';
@@ -19,26 +20,97 @@ setLang(store.loadLang());
 
 // ---------- saving ----------
 
-// Every change goes through update(fn): fn(state) must only depend on the state it is given,
-// so a shared hub can re-apply it to a newer version after a conflicting write.
+// Two modes, one code path for changes:
+// - local: the state lives in this browser (store.js); other windows follow over BroadcastChannel.
+// - hub:   a hub (hub/server.mjs) served this page and holds the one shared state. Each change is
+//          sent with the version it was made on; after a conflict it is re-applied to the newer
+//          version. Without a link to the hub, changes are refused so devices never drift apart.
+// Every change goes through update(fn). fn(state) must only depend on the state it is given, so it
+// can be re-applied.
+
+class Refused extends Error {}
+let hubMode = false, linked = false, server = { version: 0, state: null }, pending = [], flushing = false;
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const fresh = (doc) => (doc && doc.state ? clone(doc.state) : S.createState(1000 + (doc ? doc.version : 0)));
+
 function update(fn, { plan = true } = {}) {
-  const res = fn(state);
-  if (plan) S.ensurePlan(state);
-  store.save(state);
+  const step = (s) => { const r = fn(s); if (plan) S.ensurePlan(s); return r; };
+  if (!hubMode) {
+    const res = step(state);
+    store.save(state);
+    render();
+    return res;
+  }
+  if (!linked) { toast(t('hubRefused')); render(); throw new Refused(); }
+  const res = step(state);          // show it at once …
+  pending.push(step);               // … and send it to the hub
+  flush();
   render();
   return res;
 }
+
+/** What this device shows in hub mode: the hub's state plus changes still on their way. */
+function shown() {
+  const s = fresh(server);
+  for (const f of pending) f(s);
+  return s;
+}
+
+async function flush() {
+  if (flushing) return;
+  flushing = true;
+  while (pending.length && linked) {
+    const next = fresh(server);
+    pending[0](next);
+    if (server.state && JSON.stringify(next) === JSON.stringify(server.state)) { pending.shift(); continue; }
+    let res;
+    try { res = await hub.put(server.version, next); } catch (e) { res = null; }
+    if (res && res.ok && res.doc) { server = { version: res.doc.version, state: res.doc.state }; pending.shift(); }
+    else if (res && res.conflict && res.doc) { server = { version: res.doc.version, state: res.doc.state }; } // re-apply on the newer version
+    else { pending = []; setLinked(false); toast(t('hubLost')); }
+  }
+  flushing = false;
+  state = shown();
+  render();
+}
+
+function setLinked(on) {
+  if (linked === on) return;
+  linked = on;
+  if (on) flush();
+  render();
+}
+
+function startHub(doc) {
+  hubMode = true;
+  hub.remember();
+  if (doc) server = { version: doc.version, state: doc.state };
+  state = shown();
+  hub.follow((d) => {
+    if (d.version < server.version) return;
+    if (d.version > server.version && d.state === null && server.state !== null) resetLocalUi(); // the session was ended elsewhere
+    server = { version: d.version, state: d.state };
+    state = shown();
+    render();
+  }, setLinked);
+}
+
+function resetLocalUi() { lastIn = null; ciSex = ''; ciName = ''; ciExpected = null; swapSel = null; }
 
 // Check-in stays instant: the plan catches up a moment after the last tap.
 let planTimer = 0;
 function schedulePlan() {
   clearTimeout(planTimer);
-  planTimer = setTimeout(() => { if (S.ensurePlan(state)) { store.save(state); if (route !== 'checkin') render(); } }, 600);
+  planTimer = setTimeout(() => {
+    if (!S.ensurePlan(clone(state))) return;
+    try { update((s) => S.ensurePlan(s), { plan: false }); } catch (e) { /* not linked: the hub plans later */ }
+  }, 600);
 }
 
 store.subscribe((type) => {
-  if (type === 'wipe') { state = S.createState(); setLang('de'); }
-  else if (type === 'lang') setLang(store.loadLang());
+  if (type === 'lang') { setLang(store.loadLang()); render(); return; }
+  if (hubMode) return; // the hub is the source of truth
+  if (type === 'wipe') { state = S.createState(); setLang('de'); resetLocalUi(); }
   else state = store.load() || S.createState();
   render();
 });
@@ -61,7 +133,7 @@ function openDialog(html, onClick) {
   dlg.onclick = (e) => {
     if (e.target === dlg) { dlg.close(); return; }
     const b = e.target.closest('[data-d]');
-    if (b) onClick(b.dataset.d, b, e);
+    if (b) Promise.resolve().then(() => onClick(b.dataset.d, b, e)).catch((err) => { if (!(err instanceof Refused)) throw err; });
   };
   if (!dlg.open) dlg.showModal();
 }
@@ -201,7 +273,7 @@ function renderBoard(main, now) {
   else { const c = main.querySelector('[data-clock]'); const txt = clockText(S.view(state, now)); if (c.textContent !== txt) c.textContent = txt; }
   const note = main.querySelector('[data-sound]');
   if (note && !DISPLAY) {
-    const msg = !soundLeader ? t('soundElsewhere') : !audioReady() ? t('soundOff') : '';
+    const msg = !soundOn() ? t('soundDeviceOff') : !soundLeader ? t('soundElsewhere') : !audioReady() ? t('soundOff') : '';
     note.hidden = !msg; note.textContent = msg;
   }
 }
@@ -248,8 +320,8 @@ function doCheckIn(level) {
   if (nameInput) ciName = nameInput.value;
   const entry = { sex: ciSex, level, name: ciExpected ? '' : ciName, id: ciExpected };
   const wasExpected = !!ciExpected;
+  const p = update((s) => S.checkIn(s, entry), { plan: false }); // throws if a hub refuses it
   ciSex = ''; ciName = ''; ciExpected = null;
-  const p = update((s) => S.checkIn(s, entry), { plan: false });
   lastIn = { id: p.id, code: p.code, name: p.name, wasExpected };
   render();
   schedulePlan();
@@ -435,7 +507,9 @@ function settingsHtml() {
         <div class="seg"><button type="button" data-act="lang" data-lang="de" aria-pressed="${getLang() === 'de'}">Deutsch</button><button type="button" data-act="lang" data-lang="en" aria-pressed="${getLang() === 'en'}">English</button></div></div>
       <div class="set-row"><span class="set-label">${esc(t('sound'))}</span>
         <div class="seg"><button type="button" data-act="test" data-kind="warn">${esc(t('testWarn'))}</button><button type="button" data-act="test" data-kind="horn">${esc(t('testHorn'))}</button><button type="button" data-act="test" data-kind="start">${esc(t('testStart'))}</button></div></div>
-      <p class="muted">${esc(t('soundHint'))}</p>
+      <div class="set-row"><span class="set-label">${esc(t('soundDevice'))}</span>
+        <button type="button" class="switch" role="switch" aria-checked="${soundOn()}" data-act="soundDevice"><span></span></button></div>
+      <p class="muted">${esc(t('soundHint'))}${hubMode ? ' ' + esc(t('soundHubHint')) : ''}</p>
     </div>
     <div class="set-group">
       <h2 class="ci-h">${esc(t('printables'))}</h2>
@@ -508,6 +582,7 @@ const main = $('#view');
 function render() {
   document.documentElement.lang = getLang();
   document.body.classList.toggle('is-display', DISPLAY);
+  document.body.classList.toggle('hub-lost', hubMode && !linked);
   document.body.dataset.view = route;
   document.title = (DISPLAY ? t('navBoard') : t('appTitle')) + ' · Pickleball Südbaden';
   if (!DISPLAY) {
@@ -520,6 +595,10 @@ function render() {
       a.toggleAttribute('aria-current', v === route);
       if (v === route) a.setAttribute('aria-current', 'page');
     }
+    const mark = $('#hubMark');
+    mark.hidden = !hubMode;
+    mark.textContent = t(linked ? 'hubOn' : 'hubOff');
+    mark.classList.toggle('is-off', !linked);
     $('#sampleBadge').hidden = !state.sample;
     $('#sampleBadge').textContent = t('sample');
   }
@@ -527,7 +606,7 @@ function render() {
   $('#pageStyle').textContent = `@page { size: ${pageSize}; margin: ${route === 'signs' ? '10mm' : '14mm'}; }`;
 
   if (route === 'board' || route === 'display') {
-    if (!DISPLAY && S.ensurePlan(state)) store.save(state);
+    if (!DISPLAY && (!hubMode || linked) && S.ensurePlan(clone(state))) update((s) => S.ensurePlan(s), { plan: false });
     renderBoard(main, Date.now());
     return;
   }
@@ -566,9 +645,13 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('pointerdown', () => { if (!DISPLAY) unlockAudio(); }, { capture: true });
 
-document.addEventListener('click', async (e) => {
+document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || dlg.contains(el)) return;
+  onAction(el).catch((err) => { if (!(err instanceof Refused)) throw err; });
+});
+
+async function onAction(el) {
   const act = el.dataset.act;
   const now = Date.now();
   switch (act) {
@@ -603,8 +686,7 @@ document.addEventListener('click', async (e) => {
       if (!(await confirmBox(t(playing ? 'skipPlayConfirm' : 'skipChangeConfirm'), t('skip')))) break;
       const phase = state.timer.phase, idx = state.timer.idx, at = Date.now();
       // Only skip what the host saw: if another device moved on meanwhile, do nothing.
-      const ev = update((s) => (s.timer.phase === phase && s.timer.idx === idx ? S.skip(s, at) : []), { plan: false });
-      handleEvents(ev, Date.now());
+      update((s) => (s.timer.phase === phase && s.timer.idx === idx ? S.skip(s, at) : []), { plan: false });
       break;
     }
     case 'addRound': update((s) => S.setSetting(s, 'rounds', s.settings.rounds + 1)); break;
@@ -621,12 +703,20 @@ document.addEventListener('click', async (e) => {
     case 'step': { const key = el.dataset.key, d = Number(el.dataset.d); update((s) => S.setSetting(s, key, s.settings[key] + d)); break; }
     case 'toggleWarmup': { const on = !state.settings.warmup; update((s) => S.setSetting(s, 'warmup', on)); break; }
     case 'fitSet': { const fit = Number(el.dataset.fit); update((s) => S.setSetting(s, 'rounds', s.settings.rounds + fit - S.roundsThatFit(s, now).planned)); break; }
+    case 'soundDevice': setSound(!soundOn()); if (soundOn()) unlockAudio(); render(); break;
     case 'lang': setLang(el.dataset.lang); store.saveLang(getLang()); render(); break;
     case 'test': unlockAudio(); setTimeout(() => play(el.dataset.kind), 60); break;
     case 'sample': sampleDialog(); break;
     case 'end':
       if (await confirmBox(t('endSessionConfirm'), t('endSessionGo'), true)) {
-        store.wipe(); state = S.createState(); setLang('de'); lastIn = null; ciSex = ''; ciName = ''; ciExpected = null;
+        if (hubMode) {
+          if (!linked) { toast(t('hubRefused')); break; }
+          let res = null;
+          try { res = await hub.end(server.version); if (res.conflict) res = await hub.end(res.doc.version); } catch (e) { res = null; }
+          if (!res || !res.ok) { toast(t('hubLost')); break; }
+          server = { version: res.doc.version, state: null }; pending = [];
+        }
+        store.wipe(); state = hubMode ? shown() : S.createState(); setLang('de'); resetLocalUi();
         render(); toast(t('ended'));
       }
       break;
@@ -635,7 +725,7 @@ document.addEventListener('click', async (e) => {
     case 'signs': signsUpTo = Math.max(1, Math.min(8, (signsUpTo || state.settings.courts) + Number(el.dataset.d))); render(); break;
     default: break;
   }
-});
+}
 
 if (!DISPLAY) {
   $('#langBtn').addEventListener('click', () => { setLang(getLang() === 'de' ? 'en' : 'de'); store.saveLang(getLang()); render(); });
@@ -643,35 +733,52 @@ if (!DISPLAY) {
 
 // ---------- the clock ----------
 
-let warned = '';
-function handleEvents(events, now) {
-  if (!soundLeader || DISPLAY) return;
-  // Only signals that just happened: after a reload or a long sleep, stay quiet.
-  const fresh = events.filter((e) => now - e.at < 5000);
-  const last = fresh[fresh.length - 1];
-  if (last) play(last.type);
+// Signals come from what the clock shows, not from who wrote the change, so the window that plays
+// them does so even when another device moved the timer on. Only fresh moments sound: after a
+// reload or a long sleep the window stays quiet.
+let warned = '', lastKey = '';
+function sounds(now) {
+  const tm = state.timer;
+  const key = tm.idx + ':' + tm.phase;
+  const on = soundOn() && soundLeader && !DISPLAY;
+  if (lastKey && key !== lastKey && !tm.pausedAt && on) {
+    const r = state.rounds[tm.idx];
+    if ((tm.phase === 'change' || tm.phase === 'done') && now - tm.playEnd < 5000) play('horn');
+    else if (tm.phase === 'play' && r && now - r.startedAt < 5000) play('start');
+  }
+  lastKey = key;
+  if (tm.phase === 'play' && !tm.pausedAt) {
+    const left = tm.playEnd - now;
+    const wkey = tm.idx + ':' + tm.playEnd;
+    if (left <= 60000 && left > 55000 && warned !== wkey) { warned = wkey; if (on) play('warn'); }
+  }
 }
 
 function tick() {
   const now = Date.now();
-  if (!DISPLAY) {
-    const events = S.advance(state, now);
-    if (events.length) { store.save(state); handleEvents(events, now); }
-    const tm = state.timer;
-    if (tm.phase === 'play' && !tm.pausedAt) {
-      const left = tm.playEnd - now;
-      const key = tm.idx + ':' + tm.playEnd;
-      if (left <= 60000 && left > 55000 && warned !== key) { warned = key; if (soundLeader) play('warn'); }
-    }
-    if (events.length && route !== 'board') render();
-  } else {
-    // The projector window moves its own copy forward and never writes or plays.
-    S.advance(state, now);
+  const events = S.advance(state, now);
+  // A control window records the transition; the projector window only shows it.
+  if (events.length && !DISPLAY) {
+    if (!hubMode) store.save(state);
+    else if (linked) { try { update((s) => { S.advance(s, Date.now()); }, { plan: false }); } catch (e) { /* refused */ } }
   }
+  sounds(now);
+  if (events.length && route !== 'board' && route !== 'display') render();
   if (route === 'board' || route === 'display') renderBoard(main, now);
 }
 
-// One window plays the sounds: the first control window to take the lock.
+// Sound plays on one device and in one window there. Per device: a switch in the settings,
+// on by default without a hub, and with a hub only on the computer that runs it.
+// Per window: the first window that wants sound takes a lock.
+const SOUND_KEY = 'pbsb-play-sound';
+function soundOn() {
+  let v = null;
+  try { v = localStorage.getItem(SOUND_KEY); } catch (e) { v = null; }
+  if (v === 'on') return true;
+  if (v === 'off') return false;
+  return !hubMode || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+}
+function setSound(on) { try { localStorage.setItem(SOUND_KEY, on ? 'on' : 'off'); } catch (e) { /* ignore */ } }
 let soundLeader = !DISPLAY;
 if (!DISPLAY && navigator.locks) {
   soundLeader = false;
@@ -711,8 +818,15 @@ if (DISPLAY) {
   document.addEventListener('fullscreenchange', () => { lastBoardHtml = ''; render(); });
 }
 
-S.ensurePlan(state);
+// Start: with a hub remembered for this address, wait for it; otherwise run locally and look for one.
+const wasHub = hub.remembered();
+if (wasHub) startHub(null);
+else S.ensurePlan(state);
 render();
 tick();
 setInterval(tick, 250);
 keepAwake();
+hub.detect().then((doc) => {
+  if (doc && doc !== 'none') { if (!hubMode) { startHub(doc); render(); } }
+  else if (doc === 'none' && wasHub) { hub.forget(); location.reload(); } // this address no longer has a hub
+});

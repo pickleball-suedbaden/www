@@ -4,7 +4,7 @@
 // every window of the tool is closed (no skipWaiting), so it never disturbs a running session.
 // Bump VERSION whenever a cached file changes.
 
-const VERSION = 'play-v2';
+const VERSION = 'play-v3';
 const FILES = [
   './',
   'index.html',
@@ -16,6 +16,7 @@ const FILES = [
   'js/i18n.js',
   'js/store.js',
   'js/audio.js',
+  'js/hub.js',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',
@@ -46,7 +47,9 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  const url = new URL(req.url);
+  // Never cache the hub's API: state and events always come live from the hub.
+  if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.includes('/play/api/')) return;
   event.respondWith((async () => {
     const cache = await caches.open(VERSION);
     const hit = await cache.match(req, { ignoreSearch: true }) || (req.mode === 'navigate' ? await cache.match('./') : undefined);

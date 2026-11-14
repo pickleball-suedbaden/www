@@ -264,3 +264,12 @@ body.is-display.is-idle { cursor: none; }
   .pr-round .pr-vs { width: 7mm; font-size: 8pt; color: #444; text-align: center; }
   .pr-sit td { font-size: 9pt; }
 }
+
+/* hub link mark */
+.hub-mark { display: inline-flex; align-items: center; gap: 6px; font: 700 13px/1 var(--f-calm); padding: 6px 9px; border-radius: 999px; background: #0E5A2B; color: var(--white); }
+.hub-mark::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #5BE38A; }
+.hub-mark.is-off { background: var(--red-700); }
+.hub-mark.is-off::before { background: var(--white); }
+.hub-lost-mark { display: none; }
+body.is-display.hub-lost .hub-lost-mark { display: block; position: fixed; left: 1.4vw; bottom: 1.6vh; width: 2.2vh; height: 2.2vh; border-radius: 50%; background: var(--red-600); }
+@media (max-width: 420px) { .p-brand span { display: none; } }
