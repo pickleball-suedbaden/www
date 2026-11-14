@@ -14,7 +14,7 @@ the `.local` address or the IP address it prints.
 | Variable | Default | What |
 |---|---|---|
 | `PORT` | `15120` | port |
-| `HOST` | `0.0.0.0` | bind address |
+| `HOST` | `::` (IPv6 and IPv4) | bind address; `0.0.0.0` for IPv4 only |
 | `PLAY_ROOT` | the repository root | the site's static files |
 | `PLAY_DATA` | `~/.local/share/pbsb-play/session.json` | the session file (survives a restart) |
 

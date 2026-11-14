@@ -231,15 +231,20 @@ body.is-display.is-idle { cursor: none; }
 .sign-word { font-family: var(--f-loud); font-weight: 700; font-style: italic; text-transform: uppercase; font-size: clamp(18px, 3vw, 34px); letter-spacing: .04em; }
 
 @media print {
-  body.play { background: var(--white); }
+  body.play { background: var(--white); min-height: 0; }
   .no-print, .p-top, .p-nav, .toast, .dlg, .pr-bar { display: none !important; }
   .p-view { padding: 0; max-width: none; }
   .sheet { box-shadow: none; margin: 0; width: auto; aspect-ratio: auto; break-after: page; }
   .sheet:last-child { break-after: auto; }
   .sheet-portrait { height: 268mm; padding: 0; }
   .sheet-landscape { height: 188mm; }
-  .rc-rules, .rc-safety { font-size: 12.5pt; }
-  .rc-h { font-size: 24pt; }
+  .rc-sheet { grid-template-rows: auto auto auto; align-content: space-between; gap: 5mm; }
+  .rc-half { padding-top: 4mm; }
+  .rc-rules { gap: 2.2mm; }
+  .rc-rules, .rc-safety { font-size: 12.5pt; line-height: 1.32; }
+  .rc-h { font-size: 26pt; margin-bottom: 3mm; }
+  .sign-num text { stroke-width: 4; }
+  .sign-word { font-size: 26pt; }
 }
 .rounds .sit button.person { background: var(--mist); padding: 4px 10px; min-height: 44px; }
 

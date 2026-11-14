@@ -352,12 +352,12 @@ export const STRINGS = {
     signsUpTo: 'Signs 1 to {n}',
     printables: 'Printables',
 
-    rulesHeading: 'Tonight\'s rules',
+    rulesHeading: 'Today\'s rules',
     rules: [
-      'Serve underhand, diagonally, from behind the baseline. If you miss, you get a second try tonight.',
+      'Serve underhand, diagonally, from behind the baseline. If you miss, you get a second try today.',
       'The ball bounces twice before anyone volleys. The return of serve must bounce, and so must the serving team\'s next shot. After that, anything goes.',
       'The kitchen: no volleys while you stand in the zone next to the net. You may step in to play a ball that has bounced.',
-      'Every rally scores a point. The team that wins the rally serves next, and partners take turns serving. Don\'t worry about the official serving order tonight.',
+      'Every rally scores a point. The team that wins the rally serves next, and partners take turns serving. Don\'t worry about the official serving order today.',
       'When the horn sounds, finish the point, shake hands and check the board.',
     ],
     safety: 'Don\'t run backwards for a lob. Turn around or let it go: backpedalling is a common cause of falls.',

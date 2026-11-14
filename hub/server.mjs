@@ -8,7 +8,7 @@
 //
 // Settings (environment variables, defaults in brackets):
 //   PORT       port to listen on                        [15120]
-//   HOST       bind address                             [0.0.0.0]
+//   HOST       bind address                             [:: (IPv6 and IPv4)]
 //   PLAY_ROOT  folder with the site's static files      [the folder above hub/]
 //   PLAY_DATA  JSON file that keeps the session         [~/.local/share/pbsb-play/session.json]
 //
@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 15120);
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || '::';
 const ROOT = path.resolve(process.env.PLAY_ROOT || path.join(HERE, '..'));
 const DATA = path.resolve(process.env.PLAY_DATA || path.join(os.homedir(), '.local', 'share', 'pbsb-play', 'session.json'));
 const MAX_BODY = 2 * 1024 * 1024;
