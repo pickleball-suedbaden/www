@@ -242,3 +242,25 @@ body.is-display.is-idle { cursor: none; }
   .rc-h { font-size: 24pt; }
 }
 .rounds .sit button.person { background: var(--mist); padding: 4px 10px; min-height: 44px; }
+
+.r-actions { display: inline-flex; gap: 8px; margin-left: auto; }
+.print-rounds { display: none; }
+.dlg textarea[readonly] { font-size: 14px; line-height: 1.4; background: var(--mist); }
+
+@media print {
+  body[data-view="rounds"] .print-rounds { display: block; color: #000; }
+  .pr-head { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 4px; margin-bottom: 6px; }
+  .pr-head h1 { font-family: var(--f-loud); font-weight: 900; font-style: italic; text-transform: uppercase; font-size: 20pt; line-height: 1; }
+  .pr-head p, .pr-note { font-size: 9.5pt; }
+  .pr-note { margin-bottom: 8px; }
+  .pr-grid { columns: 2; column-gap: 8mm; }
+  .pr-round { break-inside: avoid; margin-bottom: 5mm; }
+  .pr-round h2 { font-family: var(--f-loud); font-weight: 900; font-style: italic; text-transform: uppercase; font-size: 13pt; border-bottom: 1px solid #000; margin-bottom: 2px; }
+  .pr-round table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+  .pr-round th { width: 6mm; text-align: left; font-family: var(--f-loud); font-weight: 900; font-size: 12pt; }
+  .pr-round td, .pr-round th { padding: 1.2mm 1mm; border-bottom: .3pt solid #999; vertical-align: baseline; }
+  .pr-round td b { font-family: var(--f-loud); font-weight: 900; font-size: 11.5pt; }
+  .pr-round td span { font-size: 8.5pt; }
+  .pr-round .pr-vs { width: 7mm; font-size: 8pt; color: #444; text-align: center; }
+  .pr-sit td { font-size: 9pt; }
+}

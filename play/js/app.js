@@ -328,12 +328,66 @@ function roundsHtml() {
       ${courtsHtml(r, i, { swappable: upcoming })}
     </li>`;
   }).join('');
+  const has = state.rounds.length && state.rounds[0].courts.length;
   return `<section class="rounds">
-    <div class="r-top"><h1 class="r-title">${esc(t('roundsTitle'))}</h1>${state.sample ? `<span class="b-sample">${esc(t('sample'))}</span>` : ''}</div>
-    <p class="muted">${esc(t('swapHint'))}</p>
-    ${state.rounds.length && state.rounds[0].courts.length ? `<ol class="r-list">${items}</ol>` : `<p class="b-empty">${esc(t('noRounds'))}</p>`}
-    <p><button type="button" class="btn btn-quiet" data-act="addRound">${esc(t('addRound'))}</button></p>
+    <div class="r-top no-print"><h1 class="r-title">${esc(t('roundsTitle'))}</h1>${state.sample ? `<span class="b-sample">${esc(t('sample'))}</span>` : ''}
+      ${has ? `<span class="r-actions"><button type="button" class="btn btn-navy" data-act="share">${esc(t('share'))}</button><button type="button" class="btn btn-quiet" data-act="print">${esc(t('print'))}</button></span>` : ''}</div>
+    <p class="muted no-print">${esc(t('swapHint'))}</p>
+    ${has ? `<ol class="r-list no-print">${items}</ol>` : `<p class="b-empty">${esc(t('noRounds'))}</p>`}
+    <p class="no-print"><button type="button" class="btn btn-quiet" data-act="addRound">${esc(t('addRound'))}</button></p>
+    ${has ? printRoundsHtml() : ''}
   </section>`;
+}
+
+// The paper backup: every round as a compact table. Codes and first names only, never the level.
+function printRoundsHtml() {
+  const date = new Date().toLocaleDateString(getLang() === 'de' ? 'de-DE' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'numeric', year: 'numeric' });
+  const who = (id) => { const p = playerById(id); return `<b>${esc(p.code)}</b>${p.name ? ` <span>${esc(p.name)}</span>` : ''}`; };
+  const rounds = state.rounds.map((r, i) => `<section class="pr-round">
+      <h2>${esc(roundName(i))}</h2>
+      <table><tbody>${r.courts.map((c, k) => `<tr><th>${k + 1}</th><td>${who(c[0])} + ${who(c[1])}</td><td class="pr-vs">${esc(t('versus'))}</td><td>${who(c[2])} + ${who(c[3])}</td></tr>`).join('')}
+      ${r.sitOut.length ? `<tr class="pr-sit"><th></th><td colspan="3">${esc(t('sittingOut'))}: ${r.sitOut.slice().sort(byCode).map(who).join(', ')}</td></tr>` : ''}</tbody></table>
+    </section>`).join('');
+  return `<div class="print-rounds">
+    <header class="pr-head"><h1>${esc(t('printTitle'))} · Pickleball Südbaden e.V.</h1><p>${esc(date)}${state.sample ? ' · ' + esc(t('sample')) : ''}</p></header>
+    <p class="pr-note">${esc(t('printNote'))} ${esc(t('court'))} 1 … ${state.settings.courts}.</p>
+    <div class="pr-grid">${rounds}</div></div>`;
+}
+
+/** All planned rounds as plain text for WhatsApp (*bold* marks the headings). */
+function shareText() {
+  const who = (id) => { const p = playerById(id); return p.name ? `${p.code} ${p.name}` : p.code; };
+  const lines = [`*${t('shareHeader')}*`];
+  if (state.sample) lines.push(`(${t('sample')})`);
+  state.rounds.forEach((r, i) => {
+    if (r.started && i !== state.timer.idx) return; // only what is still to come
+    lines.push('', `*${roundName(i)}*`);
+    r.courts.forEach((c, k) => lines.push(`${t('courtN', { n: k + 1 })}: ${who(c[0])} + ${who(c[1])} – ${who(c[2])} + ${who(c[3])}`));
+    if (r.sitOut.length) lines.push(`${t('shareSit')}: ${r.sitOut.slice().sort(byCode).map(who).join(', ')}`);
+  });
+  lines.push('', t('shareFooter'));
+  return lines.join('\n');
+}
+
+function shareDialog() {
+  S.ensurePlan(state);
+  const text = shareText();
+  openDialog(`<h2 class="d-h">${esc(t('share'))}</h2>
+    <textarea id="shareBox" rows="12" readonly>${esc(text)}</textarea>
+    <div class="d-btns"><button type="button" class="btn btn-quiet" data-d="cancel">${esc(t('close'))}</button>
+    <button type="button" class="btn btn-quiet" data-d="copy">${esc(t('copy'))}</button>
+    ${navigator.share ? `<button type="button" class="btn btn-navy" data-d="share">${esc(t('share'))}</button>` : ''}</div>`,
+  async (d) => {
+    if (d === 'cancel') { dlg.close(); return; }
+    if (d === 'share') {
+      try { await navigator.share({ text }); dlg.close(); } catch (e) { if (e && e.name !== 'AbortError') toast(t('shareFailed')); }
+      return;
+    }
+    if (d === 'copy') {
+      try { await navigator.clipboard.writeText(text); dlg.close(); toast(t('shareCopied')); }
+      catch (e) { const box = $('#shareBox', dlg); box.focus(); box.select(); toast(t('shareFailed')); }
+    }
+  });
 }
 
 function onSwap(roundIdx, id) {
@@ -577,6 +631,7 @@ document.addEventListener('click', async (e) => {
       }
       break;
     case 'print': window.print(); break;
+    case 'share': shareDialog(); break;
     case 'signs': signsUpTo = Math.max(1, Math.min(8, (signsUpTo || state.settings.courts) + Number(el.dataset.d))); render(); break;
     default: break;
   }
