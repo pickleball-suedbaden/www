@@ -1,0 +1,56 @@
+// Pickleball Südbaden e.V. · session organiser · offline cache.
+// Scope /play/. Caches every file the tool needs on the first visit, then serves from the cache,
+// so the tool works in airplane mode. A new version installs in the background and waits until
+// every window of the tool is closed (no skipWaiting), so it never disturbs a running session.
+// Bump VERSION whenever a cached file changes.
+
+const VERSION = 'play-v1';
+const FILES = [
+  './',
+  'index.html',
+  'play.css',
+  'manifest.webmanifest',
+  'js/app.js',
+  'js/session.js',
+  'js/draw.js',
+  'js/i18n.js',
+  'js/store.js',
+  'js/audio.js',
+  'icons/icon-192.png',
+  'icons/icon-512.png',
+  'icons/icon-maskable-512.png',
+  'icons/apple-touch-icon.png',
+  '../assets/site.css',
+  '../assets/img/logo-mark-on-dark.png',
+  '../assets/img/favicon.svg',
+  '../assets/img/favicon-32.png',
+  '../assets/fonts/saira/saira-latin-standard-italic.woff2',
+  '../assets/fonts/saira/saira-latin-ext-standard-italic.woff2',
+  '../assets/fonts/saira/saira-latin-standard-normal.woff2',
+  '../assets/fonts/saira/saira-latin-ext-standard-normal.woff2',
+  '../assets/fonts/inter/inter-latin-wght-normal.woff2',
+  '../assets/fonts/inter/inter-latin-ext-wght-normal.woff2',
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(VERSION).then((cache) => cache.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))));
+});
+
+self.addEventListener('activate', (event) => {
+  // Runs on the first install, or once every window of the old version is closed. Taking control
+  // then cannot disturb a running session.
+  event.waitUntil(caches.keys()
+    .then((keys) => Promise.all(keys.filter((k) => k.startsWith('play-') && k !== VERSION).map((k) => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  event.respondWith((async () => {
+    const cache = await caches.open(VERSION);
+    const hit = await cache.match(req, { ignoreSearch: true }) || (req.mode === 'navigate' ? await cache.match('./') : undefined);
+    if (hit) return hit;
+    try { return await fetch(req); } catch (e) { return (await cache.match('./')) || Response.error(); }
+  })());
+});
