@@ -4,7 +4,7 @@
 // every window of the tool is closed (no skipWaiting), so it never disturbs a running session.
 // Bump VERSION whenever a cached file changes.
 
-const VERSION = 'play-v4';
+const VERSION = 'play-v5';
 const FILES = [
   './',
   'index.html',

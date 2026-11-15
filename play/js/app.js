@@ -236,8 +236,10 @@ function boardHtml(now) {
     if (v.phase === 'done') parts.push(b('addRound', t('addRound'), 'btn-navy'));
     if (v.phase === 'play' || v.phase === 'change') {
       parts.push(v.paused ? b('resume', t('resume'), 'btn-go') : b('pause', t('pause')));
+      parts.push(b('minus', t('minusMinute')));
       parts.push(b('plus', t('plusMinute')));
       parts.push(b('skip', t('skip')));
+      if (v.phase === 'play') parts.push(b('restart', t('restart')));
     }
     parts.push(b('projector', t('projector')));
     ctrl = `<div class="b-ctrl">${parts.join('')}</div>`;
@@ -486,7 +488,7 @@ function settingsHtml() {
     <output>${st[key]}${unit ? ` <small>${esc(unit)}</small>` : ''}</output>
     <button type="button" data-act="step" data-key="${key}" data-d="1" aria-label="+">+</button></div></div>`;
   const fit = S.roundsThatFit(state, Date.now());
-  const started = state.rounds.some((r) => r.started);
+  const started = state.rounds.some((r) => r.started || r.locked); // a restarted round still counts
   return `<section class="set">
     <h1 class="r-title">${esc(t('settingsTitle'))}</h1>
     <div class="set-group">
@@ -681,6 +683,14 @@ async function onAction(el) {
     case 'pause': update((s) => S.pause(s, now), { plan: false }); break;
     case 'resume': update((s) => S.resume(s, now), { plan: false }); break;
     case 'plus': { const at = state.timer.phase + (state.timer.phase === 'play' ? state.timer.playEnd : state.timer.changeEnd); update((s) => { if (s.timer.phase + (s.timer.phase === 'play' ? s.timer.playEnd : s.timer.changeEnd) === at) S.addMinute(s); }, { plan: false }); break; }
+    case 'minus': { const at = state.timer.phase + (state.timer.phase === 'play' ? state.timer.playEnd : state.timer.changeEnd); update((s) => { if (s.timer.phase + (s.timer.phase === 'play' ? s.timer.playEnd : s.timer.changeEnd) === at) S.minusMinute(s, now); }, { plan: false }); break; }
+    case 'restart': {
+      const idx = state.timer.idx;
+      if (state.timer.phase !== 'play' || !(await confirmBox(t('restartConfirm', { round: roundName(idx) }), t('restart')))) break;
+      // Only restart the round the host saw: if another device moved on meanwhile, do nothing.
+      update((s) => { if (s.timer.phase === 'play' && s.timer.idx === idx) S.restartRound(s); }, { plan: false });
+      break;
+    }
     case 'skip': {
       const playing = state.timer.phase === 'play';
       if (!(await confirmBox(t(playing ? 'skipPlayConfirm' : 'skipChangeConfirm'), t('skip')))) break;

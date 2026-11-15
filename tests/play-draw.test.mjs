@@ -272,6 +272,43 @@ test('timer: absolute times, pause, +1 minute, skip, settings apply from the nex
   assert.ok(s.rounds.every((r) => r.started));
 });
 
+test('timer: -1 minute, and restarting the round in play keeps its line-up', () => {
+  const s = eveningWith(10, 10, { warmup: false });
+  S.setSetting(s, 'gameMin', 12);
+  S.setSetting(s, 'changeMin', 3);
+  const t0 = 10_000_000;
+  S.startNext(s, t0);
+  assert.equal(S.minusMinute(s, t0), true);
+  assert.equal(S.view(s, t0).remaining, 11 * MIN);
+  assert.equal(S.minusMinute(s, t0 + 10 * MIN), false, 'a minute left: -1 does not end the game (Skip does)');
+  assert.equal(S.view(s, t0 + 10 * MIN).remaining, 1 * MIN);
+  S.pause(s, t0 + 2 * MIN);
+  assert.equal(S.minusMinute(s, t0 + 50 * MIN), true, 'works while paused, from the paused clock');
+  assert.equal(S.view(s, t0 + 50 * MIN).remaining, 8 * MIN);
+  // Through the first changeover into round 2, then restart round 2.
+  S.resume(s, t0 + 2 * MIN);
+  S.advance(s, t0 + 11 * MIN);       // the horn came at 10 minutes
+  assert.equal(s.timer.phase, 'change');
+  assert.equal(S.restartRound(s), false, 'only the round in play can restart');
+  S.advance(s, t0 + 16 * MIN);
+  assert.equal(s.timer.idx, 1);
+  const lineUp = JSON.stringify(s.rounds[1].courts);
+  S.pause(s, t0 + 18 * MIN);
+  assert.equal(S.restartRound(s), true);
+  assert.equal(s.timer.phase, 'idle');
+  assert.equal(s.timer.idx, 0);
+  assert.equal(S.nextIndex(s), 1, 'round 2 waits for its start tap');
+  // A late arrival now must not change the restarted round.
+  S.checkIn(s, { sex: 'M', level: 1 });
+  S.ensurePlan(s);
+  assert.equal(JSON.stringify(s.rounds[1].courts), lineUp);
+  assert.deepEqual(S.advance(s, t0 + 60 * MIN), [], 'nothing runs until the host starts it');
+  S.startNext(s, t0 + 60 * MIN);
+  assert.equal(s.timer.idx, 1);
+  assert.equal(S.view(s, t0 + 60 * MIN).remaining, 12 * MIN, 'the full length again');
+  assert.equal(S.view(s, t0 + 60 * MIN).paused, false);
+});
+
 test('rounds that still fit before the end time', () => {
   const s = eveningWith(10, 10, { warmup: false });
   const now = new Date(2026, 10, 15, 19, 0).getTime();

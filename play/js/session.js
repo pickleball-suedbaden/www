@@ -285,6 +285,31 @@ export function addMinute(s) {
   else if (t.phase === 'change') t.changeEnd += MIN;
 }
 
+/** Take a minute off the game or the changeover, but never end it this way (that is Skip). */
+export function minusMinute(s, now) {
+  const t = s.timer;
+  const clock = t.pausedAt || now;
+  const key = t.phase === 'play' ? 'playEnd' : t.phase === 'change' ? 'changeEnd' : '';
+  if (!key || t[key] - clock <= MIN) return false;
+  t[key] -= MIN;
+  return true;
+}
+
+/**
+ * Restart the round in play: it goes back to waiting for its start tap, with the same line-up.
+ * The clock runs again from the full length when the host starts it.
+ */
+export function restartRound(s) {
+  const t = s.timer;
+  if (t.phase !== 'play') return false;
+  const r = s.rounds[t.idx];
+  if (!r) return false;
+  r.started = false; r.locked = true; delete r.startedAt;
+  const prev = s.rounds.slice(0, t.idx).map((x) => x.started).lastIndexOf(true);
+  Object.assign(t, { idx: prev, phase: 'idle', playEnd: 0, changeEnd: 0, pausedAt: 0 });
+  return true;
+}
+
 /** Skip: end the game now, or end the changeover now. */
 export function skip(s, now) {
   const t = s.timer;
