@@ -309,6 +309,19 @@ test('timer: -1 minute, and restarting the round in play keeps its line-up', () 
   assert.equal(S.view(s, t0 + 60 * MIN).paused, false);
 });
 
+test('a check-in applied again after a sync conflict stays the same player with the next free code', () => {
+  const base = S.createState(1);
+  const a = JSON.parse(JSON.stringify(base));
+  const fromA = (s) => S.checkIn(s, { sex: 'F', level: 1, newId: 'pA' });
+  assert.equal(fromA(a).code, 'F1', 'device A first thinks F1');
+  const hub = JSON.parse(JSON.stringify(base));
+  S.checkIn(hub, { sex: 'F', level: 2, newId: 'pB' });  // device B got there first
+  const p = fromA(hub);                                   // A's change re-applied on the newer state
+  assert.equal(p.id, 'pA');
+  assert.equal(p.code, 'F2');
+  assert.deepEqual(hub.players.map((x) => x.id + '=' + x.code), ['pB=F1', 'pA=F2']);
+});
+
 test('rounds that still fit before the end time', () => {
   const s = eveningWith(10, 10, { warmup: false });
   const now = new Date(2026, 10, 15, 19, 0).getTime();

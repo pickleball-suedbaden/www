@@ -290,6 +290,7 @@ function checkinHtml() {
   const gone = state.players.filter((p) => p.status === 'gone');
   const expected = state.players.filter((p) => p.status === 'expected');
   const exp = ciExpected ? S.byId(state, ciExpected) : null;
+  const last = lastIn ? S.byId(state, lastIn.id) : null; // the code the hub settled on
   const lvl = (n) => `<button type="button" class="ci-level" data-act="level" data-level="${n}"><span class="ci-ln">${n}</span>${esc(t('level' + n))}</button>`;
   const sex = (k) => `<button type="button" class="ci-sex" data-act="sex" data-sex="${k}" aria-pressed="${ciSex === k}"><span class="ci-sx">${k}</span>${esc(t('sex' + k))}</button>`;
   const row = (p) => `<li><button type="button" class="pl-row" data-act="editPlayer" data-id="${p.id}">
@@ -300,7 +301,7 @@ function checkinHtml() {
       <span><b>${c.courts}</b> ${esc(t('countsCourts'))}</span><span><b>${c.sitting}</b> ${esc(t('countsSitting'))}</span>
       ${c.expected ? `<span><b>${c.expected}</b> ${esc(t('countsExpected'))}</span>` : ''}
     </p>
-    ${lastIn ? `<div class="ci-last"><span class="ci-lcode">${esc(lastIn.code)}</span><span class="ci-lname">${esc(lastIn.name)} ${esc(t('checkedIn'))}</span>
+    ${last ? `<div class="ci-last"><span class="ci-lcode">${esc(last.code)}</span><span class="ci-lname">${esc(last.name)} ${esc(t('checkedIn'))}</span>
       <button type="button" class="btn btn-quiet" data-act="undoIn">${esc(t('undo'))}</button><button type="button" class="btn btn-quiet" data-act="editLast">${esc(t('edit'))}</button></div>` : ''}
     ${exp ? `<p class="ci-selected">${esc(t('selectedName', { name: exp.name }))} <button type="button" class="link" data-act="clearExp">${esc(t('clearSelection'))}</button></p>`
       : `<label class="ci-field"><span>${esc(t('nameLabel'))}</span><input id="ciName" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="24" placeholder="${esc(t('namePlaceholder'))}" value="${esc(ciName)}"></label>`}
@@ -320,11 +321,14 @@ function doCheckIn(level) {
   if (!ciSex) { toast(t('pickSexFirst')); return; }
   const nameInput = $('#ciName');
   if (nameInput) ciName = nameInput.value;
-  const entry = { sex: ciSex, level, name: ciExpected ? '' : ciName, id: ciExpected };
+  // A fixed id keeps this the same player if another device checks someone in at the same moment:
+  // the hub then gives the next free code, and the card below shows the code the hub settled on.
+  const newId = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const entry = { sex: ciSex, level, name: ciExpected ? '' : ciName, id: ciExpected, newId };
   const wasExpected = !!ciExpected;
   const p = update((s) => S.checkIn(s, entry), { plan: false }); // throws if a hub refuses it
   ciSex = ''; ciName = ''; ciExpected = null;
-  lastIn = { id: p.id, code: p.code, name: p.name, wasExpected };
+  lastIn = { id: p.id, wasExpected };
   render();
   schedulePlan();
   if (navigator.vibrate) navigator.vibrate(30);

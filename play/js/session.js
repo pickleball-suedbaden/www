@@ -35,12 +35,15 @@ function nextCode(s, sex) {
   return sex + (max + 1);
 }
 
-/** Check a player in. `id` checks in someone from the expected list. Returns the player. */
-export function checkIn(s, { sex, level, name = '', id = null }) {
+/**
+ * Check a player in. `id` checks in someone from the expected list. `newId` names a new player, so
+ * a check-in that is applied again after a sync conflict stays the same player. Returns the player.
+ */
+export function checkIn(s, { sex, level, name = '', id = null, newId = null }) {
   let p = id ? byId(s, id) : null;
   if (!p) {
     if (s.players.length >= MAX_PLAYERS) throw new Error('too many players');
-    p = { id: 'p' + s.nextId++, code: '', sex, level, name: '', status: 'here' };
+    p = { id: newId && !byId(s, newId) ? newId : 'p' + s.nextId++, code: '', sex, level, name: '', status: 'here' };
     s.players.push(p);
   }
   p.sex = sex; p.level = level; p.status = 'here';
