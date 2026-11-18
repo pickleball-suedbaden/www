@@ -19,3 +19,10 @@ the `.local` address or the IP address it prints.
 | `PLAY_DATA` | `~/.local/share/pbsb-play/session.json` | the session file (survives a restart) |
 
 "Treff beenden" in the app deletes the session on the hub. Stop the hub with Ctrl+C.
+
+Updates: pages served by the hub load the newest files from the laptop on every reload (the offline
+cache is only a fallback there). A page that still runs older files than another device has written
+with gets "This page is out of date" and cannot save until it is reloaded, so an old page cannot undo
+what it does not understand (for example the groups). One exception: a browser tab on the laptop
+opened before 18 November 2026 still runs the old offline cache; reload it once with Cmd+Shift+R or
+close that tab and open it again.

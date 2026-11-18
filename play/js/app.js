@@ -68,6 +68,7 @@ async function flush() {
     try { res = await hub.put(server.version, next); } catch (e) { res = null; }
     if (res && res.ok && res.doc) { server = { version: res.doc.version, state: res.doc.state }; pending.shift(); }
     else if (res && res.conflict && res.doc) { server = { version: res.doc.version, state: res.doc.state }; } // re-apply on the newer version
+    else if (res && res.outdated) { pending = []; setLinked(false); toast(t('hubOutdated')); }
     else { pending = []; setLinked(false); toast(t('hubLost')); }
   }
   flushing = false;

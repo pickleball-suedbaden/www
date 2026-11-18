@@ -87,6 +87,34 @@ test('versioned writes, conflicts, events and a restart', async () => {
   }
 });
 
+test('a page running older files cannot overwrite what a newer app wrote', async () => {
+  const h = await start();
+  try {
+    const send = (base, state, schema) => fetch(h.base + '/play/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(schema === undefined ? { base, state } : { base, state, schema }) });
+    let v = (await (await fetch(h.base + '/play/api/state')).json()).version;
+    let r = await send(v, { old: true });               // an old app sends no schema: fine while nobody newer wrote
+    assert.equal(r.status, 200); v++;
+    r = await send(v, { groups: true }, 2);
+    assert.equal(r.status, 200); v++;
+    r = await send(v, { old: true });                   // now the old app is refused …
+    assert.equal(r.status, 426);
+    const doc = await r.json();
+    assert.equal(doc.version, v);
+    assert.deepEqual(doc.state, { groups: true }, '… and nothing changed');
+    r = await send(v, { groups: true, more: 1 }, 2);   // the current app still writes
+    assert.equal(r.status, 200); v++;
+    r = await fetch(h.base + '/play/api/state?base=' + v, { method: 'DELETE' });
+    assert.equal(r.status, 200); v++;
+    assert.equal((await send(v, { old: true })).status, 426, 'ending the session does not let old pages back in');
+  } finally { await stop(h); }
+  const h2 = await start();                              // the rule survives a restart
+  try {
+    const v = (await (await fetch(h2.base + '/play/api/state')).json()).version;
+    const r = await fetch(h2.base + '/play/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base: v, state: { old: true } }) });
+    assert.equal(r.status, 426);
+  } finally { await stop(h2); }
+});
+
 test('static files: the site yes, dotfiles and repository folders no', async () => {
   const h = await start();
   try {

@@ -14,8 +14,11 @@
 //
 // API (relative to /play/, so the app needs no host name):
 //   GET    /play/api/state   -> { hub: true, version, state }
-//   PUT    /play/api/state   body { base, state } -> 200 { version, state } if base is the current
-//                            version, else 409 with the current { version, state }
+//   PUT    /play/api/state   body { base, state, schema } -> 200 { version, state } if base is the
+//                            current version, else 409 with the current { version, state }. `schema` is
+//                            the state version the app understands; once an app with a newer schema has
+//                            written, an older app (a page still running old files) gets 426 and cannot
+//                            overwrite what it does not understand
 //   DELETE /play/api/state?base=N -> ends the session (state null), same version rule
 //   GET    /play/api/events  -> server-sent events; every new { version, state } is pushed
 
@@ -44,13 +47,16 @@ const TYPES = {
 
 // ---------- the session ----------
 
-let doc = { version: 0, state: null };
+let doc = { version: 0, state: null, schema: 0 };
 try {
   const saved = JSON.parse(fs.readFileSync(DATA, 'utf8'));
-  if (saved && Number.isInteger(saved.version)) doc = { version: saved.version, state: saved.state ?? null };
+  if (saved && Number.isInteger(saved.version)) doc = { version: saved.version, state: saved.state ?? null, schema: Number.isInteger(saved.schema) ? saved.schema : 0 };
 } catch (e) {
   if (e.code !== 'ENOENT') console.warn(`Could not read ${DATA} (${e.message}); starting with an empty session.`);
 }
+
+// What devices see; `schema` stays on the hub (and in the session file).
+const shown = () => ({ version: doc.version, state: doc.state });
 
 let writing = Promise.resolve();
 function persist() {
@@ -66,7 +72,7 @@ function persist() {
 
 const clients = new Set();
 function broadcast() {
-  const msg = `data: ${JSON.stringify(doc)}\n\n`;
+  const msg = `data: ${JSON.stringify(shown())}\n\n`;
   for (const res of clients) res.write(msg);
 }
 setInterval(() => { for (const res of clients) res.write(': keep-alive\n\n'); }, 15000).unref();
@@ -98,29 +104,31 @@ function readBody(req) {
 
 async function api(req, res, url) {
   const route = url.pathname.slice('/play/api/'.length);
-  if (route === 'state' && req.method === 'GET') return json(res, 200, { hub: true, ...doc });
+  if (route === 'state' && req.method === 'GET') return json(res, 200, { hub: true, ...shown() });
   if (route === 'state' && req.method === 'PUT') {
     let body;
     try { body = JSON.parse(await readBody(req)); } catch (e) { return json(res, e.status || 400, { error: 'bad request' }); }
     if (!body || !Number.isInteger(body.base) || typeof body.state !== 'object' || body.state === null) return json(res, 400, { error: 'bad request' });
-    if (body.base !== doc.version) return json(res, 409, { hub: true, ...doc });
-    doc = { version: doc.version + 1, state: body.state };
+    const schema = Number.isInteger(body.schema) ? body.schema : 0;
+    if (schema < doc.schema) return json(res, 426, { hub: true, error: 'outdated', ...shown() });
+    if (body.base !== doc.version) return json(res, 409, { hub: true, ...shown() });
+    doc = { version: doc.version + 1, state: body.state, schema: Math.max(doc.schema, schema) };
     await persist();
     broadcast();
-    return json(res, 200, { hub: true, ...doc });
+    return json(res, 200, { hub: true, ...shown() });
   }
   if (route === 'state' && req.method === 'DELETE') {
     const base = Number(url.searchParams.get('base'));
-    if (base !== doc.version) return json(res, 409, { hub: true, ...doc });
-    doc = { version: doc.version + 1, state: null };
+    if (base !== doc.version) return json(res, 409, { hub: true, ...shown() });
+    doc = { version: doc.version + 1, state: null, schema: doc.schema };
     await persist();
     broadcast();
-    return json(res, 200, { hub: true, ...doc });
+    return json(res, 200, { hub: true, ...shown() });
   }
   if (route === 'events' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.write('retry: 2000\n\n');
-    res.write(`data: ${JSON.stringify(doc)}\n\n`);
+    res.write(`data: ${JSON.stringify(shown())}\n\n`);
     clients.add(res);
     req.on('close', () => clients.delete(res));
     return;

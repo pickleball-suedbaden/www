@@ -2,6 +2,8 @@
 // this page. All URLs are relative, so the app works with whatever host and port serve it.
 // Without a hub the app keeps everything in this browser (store.js).
 
+import { VERSION as SCHEMA } from './session.js';
+
 const API = 'api/';
 
 /** The hub's current { version, state }; 'none' when the server answers but is no hub; null when
@@ -20,13 +22,16 @@ export async function detect(timeoutMs = 2500) {
   }
 }
 
-/** Write against `base`. Returns { ok, conflict, doc }; throws when the hub cannot be reached. */
+/**
+ * Write against `base`. Returns { ok, conflict, outdated, doc }; throws when the hub cannot be reached.
+ * `outdated`: an app with a newer state version has written, so this page must reload first.
+ */
 export async function put(base, state) {
   const res = await fetch(API + 'state', {
-    method: 'PUT', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base, state }),
+    method: 'PUT', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base, state, schema: SCHEMA }),
   });
   const doc = await res.json().catch(() => null);
-  return { ok: res.ok, conflict: res.status === 409, doc };
+  return { ok: res.ok, conflict: res.status === 409, outdated: res.status === 426, doc };
 }
 
 export async function end(base) {

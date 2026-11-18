@@ -2,9 +2,13 @@
 // Scope /play/. Caches every file the tool needs on the first visit, then serves from the cache,
 // so the tool works in airplane mode. A new version installs in the background and waits until
 // every window of the tool is closed (no skipWaiting), so it never disturbs a running session.
+// Served by a hub (any host other than the club site, for example http://localhost:15120 on the
+// laptop), the files come from the hub first and the cache is only the fallback: the hub serves
+// whatever is on the laptop, so a plain reload always gets the newest version.
 // Bump VERSION whenever a cached file changes.
 
 const VERSION = 'play-v7';
+const SITE = /(^|\.)pickleball-suedbaden\.de$/.test(self.location.hostname);
 const FILES = [
   './',
   'index.html',
@@ -52,6 +56,9 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.includes('/play/api/')) return;
   event.respondWith((async () => {
     const cache = await caches.open(VERSION);
+    if (!SITE) {
+      try { return await fetch(req, { cache: 'no-cache' }); } catch (e) { /* hub down: use the cache */ }
+    }
     const hit = await cache.match(req, { ignoreSearch: true }) || (req.mode === 'navigate' ? await cache.match('./') : undefined);
     if (hit) return hit;
     try { return await fetch(req); } catch (e) { return (await cache.match('./')) || Response.error(); }
