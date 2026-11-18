@@ -12,8 +12,12 @@
 //   4. new opponents preferred
 //   5. the two teams on a court as even as possible
 //
-// Players: { id, sex: 'F' | 'M' | 'X', level: 1 | 2 | 3 }.
+// Players: { id, sex: 'F' | 'M' | 'X', level: 1 | 2 | 3 } (and group: 1 | 2 when the evening has groups).
 // A round: { courts: [[a, b, c, d], ...], sitOut: [id, ...] } with player ids.
+// With groups, each group draws only among its own players on its own courts (drawRoundGroups), and
+// the round also carries groups: [{ name, first, courts, sitOut }]: `first` is the group's first court
+// number, `courts` how many of the round's courts (in order) belong to it, `sitOut` who sits out there.
+// The flat courts and sitOut lists stay complete, so the history counts work across both groups.
 
 export const W = {
   partner: 1e6,      // per earlier time together as partners
@@ -193,17 +197,60 @@ export function drawRound({ players, courts, history = [], seed = 1, restarts })
   return { courts: out, sitOut: ids.slice(slots), cost: bestCost };
 }
 
+/**
+ * Draw one round with groups. Each group draws only among its own players (player.group = k + 1)
+ * on its own courts; the whole evening's history counts, so someone who moved group keeps their
+ * past partners, opponents and sit-outs.
+ * @param {Array} o.groups [{ courts, first, name }] in court order (group 1 on the lowest courts)
+ */
+export function drawRoundGroups({ players, groups, history = [], seed = 1, restarts }) {
+  const courts = [], sitOut = [], out = [];
+  groups.forEach((g, k) => {
+    const mine = players.filter((p) => p.group === k + 1);
+    const r = drawRound({ players: mine, courts: g.courts, history, seed: hashSeed(seed, 'group', k), restarts });
+    courts.push(...r.courts);
+    sitOut.push(...r.sitOut);
+    out.push({ name: g.name ?? '', first: g.first, courts: r.courts.length, sitOut: r.sitOut });
+  });
+  return { courts, sitOut, groups: out };
+}
+
 /** Plan `count` rounds after `history`, each one seeing the ones before it. */
-export function planRounds({ players, courts, history = [], count, seed = 1 }) {
+export function planRounds({ players, courts, groups = null, history = [], count, seed = 1 }) {
   const all = history.slice();
   const out = [];
   for (let k = 0; k < count; k++) {
-    const r = drawRound({ players, courts, history: all, seed: hashSeed(seed, all.length) });
-    const round = { courts: r.courts, sitOut: r.sitOut };
+    const sd = hashSeed(seed, all.length);
+    const r = groups ? drawRoundGroups({ players, groups, history: all, seed: sd }) : drawRound({ players, courts, history: all, seed: sd });
+    const round = groups ? { courts: r.courts, sitOut: r.sitOut, groups: r.groups } : { courts: r.courts, sitOut: r.sitOut };
     all.push(round);
     out.push(round);
   }
   return out;
+}
+
+/**
+ * The courts of a round with their real numbers and groups: [{ ids, num, group }] (group -1 without
+ * groups), plus the groups with their slice of the courts. Used by the board, the lists and print.
+ */
+export function courtsOf(round) {
+  if (!round.groups) return { courts: round.courts.map((ids, k) => ({ ids, num: k + 1, group: -1 })), groups: null };
+  const courts = [], groups = [];
+  let i = 0;
+  round.groups.forEach((g, k) => {
+    const mine = round.courts.slice(i, i + g.courts).map((ids, j) => ({ ids, num: g.first + j, group: k }));
+    courts.push(...mine);
+    groups.push({ ...g, k, list: mine });
+    i += g.courts;
+  });
+  return { courts, groups };
+}
+
+/** Which group of `round` a player is in (-1 if the round has no groups or not the player). */
+export function groupIn(round, id) {
+  if (!round || !round.groups) return -1;
+  for (const g of courtsOf(round).groups) if (g.sitOut.includes(id) || g.list.some((c) => c.ids.includes(id))) return g.k;
+  return -1;
 }
 
 /** Evening statistics, used by the tests and for a quick check of a plan. */

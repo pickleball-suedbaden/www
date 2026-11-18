@@ -4,16 +4,17 @@
 // sync layer (local server or cloud) could hold the same object and drive more screens.
 // Every function that depends on the clock takes `now` (ms) so the time is always absolute.
 
-import { planRounds, drawRound, hashSeed, courtsInUse } from './draw.js';
+import { planRounds, drawRound, drawRoundGroups, hashSeed, courtsInUse, groupIn } from './draw.js';
 
-export const VERSION = 1;
+// Version 2 added the two playing groups (settings.groups, groupNames, groupCourts; player.group).
+export const VERSION = 2;
 export const MAX_PLAYERS = 64;
 const MIN = 60000;
 
 export function createState(seed = Date.now()) {
   return {
     v: VERSION,
-    settings: { courts: 5, gameMin: 12, changeMin: 3, warmup: true, warmupMin: 12, rounds: 5, endTime: '' },
+    settings: { courts: 5, gameMin: 12, changeMin: 3, warmup: true, warmupMin: 12, rounds: 5, endTime: '', ...GROUP_DEFAULTS(5) },
     players: [],
     nextId: 1,
     seed: seed >>> 0,
@@ -22,6 +23,22 @@ export function createState(seed = Date.now()) {
     timer: { idx: -1, phase: 'idle', playEnd: 0, changeEnd: 0, pausedAt: 0 },
     sample: false,
   };
+}
+
+// Groups off; when switched on, group 1 gets the lower half of the courts (2 of 5).
+const GROUP_DEFAULTS = (courts) => ({ groups: false, groupNames: ['', ''], groupCourts: Math.max(1, Math.floor(courts / 2)) });
+
+/**
+ * Bring a saved session up to the current shape. A session from before the groups (version 1)
+ * loads with groups off and plays on exactly as before. Safe to call more than once.
+ */
+export function migrate(s) {
+  if (!s || typeof s !== 'object' || !s.settings) return s;
+  const d = GROUP_DEFAULTS(s.settings.courts || 5);
+  for (const k of Object.keys(d)) if (s.settings[k] === undefined) s.settings[k] = d[k];
+  if (!Array.isArray(s.settings.groupNames) || s.settings.groupNames.length !== 2) s.settings.groupNames = ['', ''];
+  if (!(s.v >= VERSION)) s.v = VERSION;
+  return s;
 }
 
 // ---------- players ----------
@@ -35,18 +52,101 @@ function nextCode(s, sex) {
   return sex + (max + 1);
 }
 
+// ---------- groups ----------
+// Two groups, for example advanced players on courts 1-2 and beginners on courts 3-5. A player's group
+// is kept when groups are switched off, so switching them on again restores it.
+
+const isGroup = (g) => g === 1 || g === 2;
+/** Group for someone checked in without one: an experienced player (level 2 or 3) goes to group 1. */
+export const defaultGroup = (p) => (p.level >= 2 ? 1 : 2);
+export const groupOf = (p) => (isGroup(p.group) ? p.group : defaultGroup(p));
+
+/** Courts of group 1 and group 2. Group 1 plays on the lowest-numbered courts. */
+export function groupCourts(s) {
+  const n = s.settings.courts;
+  if (n < 2) return [n, 0];
+  const a = Math.max(1, Math.min(n - 1, s.settings.groupCourts || 1));
+  return [a, n - a];
+}
+
+/** Switch groups on or off. Players who have no group yet get one from their level, marked as automatic. */
+export function setGroups(s, on) {
+  s.settings.groups = !!on;
+  let auto = 0;
+  if (on) {
+    for (const p of s.players) {
+      if (p.code && !isGroup(p.group)) { p.group = defaultGroup(p); p.groupAuto = true; auto++; }
+    }
+  }
+  return auto;
+}
+
+export function setGroup(s, id, group) {
+  const p = byId(s, id);
+  if (!p || !isGroup(group)) return false;
+  p.group = group; p.groupAuto = false;
+  return true;
+}
+
+/** The host checked the automatic groups: they no longer need a look. */
+export function confirmGroups(s) {
+  for (const p of s.players) delete p.groupAuto;
+}
+
+export function setGroupName(s, k, name) {
+  if (k !== 0 && k !== 1) return;
+  const names = s.settings.groupNames.slice();
+  names[k] = String(name || '').trim().slice(0, 24);
+  s.settings.groupNames = names;
+}
+
+/**
+ * Per group: players present, courts, courts in use and how many sit out per round; plus a
+ * suggestion when giving one court to the other group means fewer people sit out.
+ */
+export function groupInfo(s) {
+  const split = groupCourts(s);
+  const here = present(s);
+  const sitting = (n, c) => n - 4 * courtsInUse(n, c);
+  const groups = split.map((courts, k) => {
+    const mine = here.filter((p) => groupOf(p) === k + 1);
+    const used = courtsInUse(mine.length, courts);
+    return {
+      k, name: s.settings.groupNames[k] || '', courts, first: k ? split[0] + 1 : 1, present: mine.length,
+      F: mine.filter((p) => p.sex === 'F').length, M: mine.filter((p) => p.sex === 'M').length, X: mine.filter((p) => p.sex === 'X').length,
+      used, sitting: sitting(mine.length, courts), tooSmall: mine.length > 0 && mine.length < 4,
+      auto: mine.filter((p) => p.groupAuto).length,
+    };
+  });
+  const total = (a) => sitting(groups[0].present, a) + sitting(groups[1].present, s.settings.courts - a);
+  let suggest = null;
+  if (s.settings.courts >= 2) {
+    for (const a of [split[0] - 1, split[0] + 1]) {
+      if (a < 1 || a > s.settings.courts - 1) continue;
+      const saves = total(split[0]) - total(a);
+      if (saves > 0 && (!suggest || saves > suggest.saves)) suggest = { groupCourts: a, to: a > split[0] ? 0 : 1, from: a > split[0] ? 1 : 0, saves };
+    }
+  }
+  return { groups, suggest, auto: groups[0].auto + groups[1].auto };
+}
+
+// ---------- players: check-in and changes ----------
+
 /**
  * Check a player in. `id` checks in someone from the expected list. `newId` names a new player, so
- * a check-in that is applied again after a sync conflict stays the same player. Returns the player.
+ * a check-in that is applied again after a sync conflict stays the same player. `group` (1 or 2) is
+ * the group they chose; with groups on there is no level question. Returns the player.
  */
-export function checkIn(s, { sex, level, name = '', id = null, newId = null }) {
+export function checkIn(s, { sex, level = 0, group = 0, name = '', id = null, newId = null }) {
   let p = id ? byId(s, id) : null;
   if (!p) {
     if (s.players.length >= MAX_PLAYERS) throw new Error('too many players');
     p = { id: newId && !byId(s, newId) ? newId : 'p' + s.nextId++, code: '', sex, level, name: '', status: 'here' };
     s.players.push(p);
   }
-  p.sex = sex; p.level = level; p.status = 'here';
+  p.sex = sex; p.level = level || 0; p.status = 'here';
+  if (isGroup(group)) { p.group = group; delete p.groupAuto; }
+  else if (s.settings.groups && !isGroup(p.group)) { p.group = defaultGroup(p); p.groupAuto = true; }
   p.name = String(name || p.name || '').trim().slice(0, 24);
   p.code = nextCode(s, sex);
   p.at = Date.now();
@@ -67,11 +167,12 @@ export function addExpected(s, text) {
   return added;
 }
 
-export function editPlayer(s, id, { sex, level, name }) {
+export function editPlayer(s, id, { sex, level, name, group }) {
   const p = byId(s, id);
   if (!p) return;
   if (name !== undefined) p.name = String(name).trim().slice(0, 24);
   if (level !== undefined) p.level = level;
+  if (isGroup(group) && (group !== p.group || p.groupAuto)) { p.group = group; delete p.groupAuto; }
   if (sex !== undefined && sex !== p.sex) {
     p.sex = sex;
     if (p.code) { p.code = ''; p.code = nextCode(s, sex); }
@@ -94,8 +195,11 @@ export function removePlayer(s, id) {
 
 export function counts(s) {
   const here = present(s);
-  const used = courtsInUse(here.length, s.settings.courts);
+  let used = courtsInUse(here.length, s.settings.courts);
+  let groups = null;
+  if (s.settings.groups) { groups = groupInfo(s).groups; used = groups[0].used + groups[1].used; }
   return {
+    groups,
     F: here.filter((p) => p.sex === 'F').length,
     M: here.filter((p) => p.sex === 'M').length,
     X: here.filter((p) => p.sex === 'X').length,
@@ -113,9 +217,13 @@ export function fillSample(s, women = 10, men = 10) {
   s.timer = { idx: -1, phase: 'idle', playEnd: 0, changeEnd: 0, pausedAt: 0 };
   // Alternate so the codes come out F1, M1, F2, M2 … like a real arrival order;
   // every fourth player of each sex counts as experienced, like a real evening.
+  // With groups on, the first arrivals fill group 1's courts and the rest go to group 2.
+  const g1 = s.settings.groups ? 4 * groupCourts(s)[0] : 0;
+  let k = 0;
+  const group = () => (s.settings.groups ? (k++ < g1 ? 1 : 2) : 0);
   for (let i = 0; i < Math.max(women, men); i++) {
-    if (i < women) checkIn(s, { sex: 'F', level: i % 4 === 1 ? 2 : 1 });
-    if (i < men) checkIn(s, { sex: 'M', level: i % 4 === 2 ? 2 : 1 });
+    if (i < women) checkIn(s, { sex: 'F', level: s.settings.groups ? 0 : i % 4 === 1 ? 2 : 1, group: group() });
+    if (i < men) checkIn(s, { sex: 'M', level: s.settings.groups ? 0 : i % 4 === 2 ? 2 : 1, group: group() });
   }
   s.sample = true;
 }
@@ -123,7 +231,7 @@ export function fillSample(s, women = 10, men = 10) {
 // ---------- settings ----------
 
 export function setSetting(s, key, value) {
-  const lim = { courts: [1, 8], gameMin: [1, 60], changeMin: [0, 20], warmupMin: [1, 60], rounds: [1, 20] };
+  const lim = { courts: [1, 8], gameMin: [1, 60], changeMin: [0, 20], warmupMin: [1, 60], rounds: [1, 20], groupCourts: [1, 7] };
   if (lim[key]) value = Math.max(lim[key][0], Math.min(lim[key][1], Math.round(Number(value) || 0)));
   if (key === 'warmup') value = !!value;
   if (key === 'endTime') value = /^\d{1,2}:\d{2}$/.test(value) ? value : '';
@@ -133,9 +241,48 @@ export function setSetting(s, key, value) {
 // ---------- the plan ----------
 
 const isFrozen = (r) => r.started || r.locked;
+/** Index of the first round that is not fixed yet: changes apply from there. */
+export const firstOpen = (s) => s.rounds.filter(isFrozen).length;
+
+/**
+ * What the draw works with now. With groups: players carry their group and no level, because the
+ * group already separates the levels (and players who chose a group gave no level answer). Without
+ * groups, someone who has a group counts as experienced if it is group 1, so a final round with
+ * everyone together spreads the advanced players over the courts; everyone else keeps their answer.
+ */
+function spec(s) {
+  const here = present(s);
+  if (s.settings.groups) {
+    const split = groupCourts(s);
+    return {
+      players: here.map((p) => ({ id: p.id, sex: p.sex, level: 1, group: groupOf(p) })),
+      courts: s.settings.courts,
+      groups: split.map((courts, k) => ({ courts, first: k ? split[0] + 1 : 1, name: s.settings.groupNames[k] || '' })),
+    };
+  }
+  return {
+    players: here.map((p) => (isGroup(p.group) && !p.level ? { id: p.id, sex: p.sex, level: p.group === 1 ? 2 : 1 } : p)),
+    courts: s.settings.courts,
+    groups: null,
+  };
+}
 
 export function signature(s) {
-  return s.settings.courts + '#' + present(s).map((p) => p.id + p.sex + p.level).sort().join(',');
+  const sp = spec(s);
+  // Without groups the signature is the one from before groups existed, so an old session keeps its plan.
+  if (!sp.groups) return s.settings.courts + '#' + sp.players.map((p) => p.id + p.sex + p.level).sort().join(',');
+  return s.settings.courts + '#G' + sp.groups.map((g) => g.courts).join('/') + '#' + sp.players.map((p) => p.id + p.sex + p.group).sort().join(',');
+}
+
+function plan(s, history, count, seed) {
+  const sp = spec(s);
+  return planRounds({ players: sp.players, courts: sp.courts, groups: sp.groups, history, count, seed });
+}
+
+function drawOne(s, history, seed) {
+  const sp = spec(s);
+  if (sp.groups) return drawRoundGroups({ players: sp.players, groups: sp.groups, history, seed });
+  return drawRound({ players: sp.players, courts: sp.courts, history, seed });
 }
 
 /** How many rounds the plan should hold in total (warm-up included). */
@@ -147,11 +294,10 @@ export function wantedRounds(s) {
 
 function drawFrom(s, startIdx) {
   const keep = s.rounds.slice(0, startIdx);
-  const players = present(s);
   const sig = signature(s);
   const count = wantedRounds(s) - keep.length;
   const firstWarmup = keep.length === 0 && s.settings.warmup;
-  const planned = count > 0 ? planRounds({ players, courts: s.settings.courts, history: keep, count, seed: hashSeed(s.seed, s.redraws) }) : [];
+  const planned = count > 0 ? plan(s, keep, count, hashSeed(s.seed, s.redraws)) : [];
   s.rounds = keep.concat(planned.map((r, k) => ({ ...r, warmup: firstWarmup && k === 0, sig, started: false })));
 }
 
@@ -166,11 +312,32 @@ export function ensurePlan(s) {
   if (s.rounds.length > want) { s.rounds = s.rounds.slice(0, want); return true; }
   if (s.rounds.length < want) {
     const keep = s.rounds.length;
-    const extra = planRounds({ players: present(s), courts: s.settings.courts, history: s.rounds, count: want - keep, seed: hashSeed(s.seed, s.redraws, keep) });
+    const extra = plan(s, s.rounds, want - keep, hashSeed(s.seed, s.redraws, keep));
     s.rounds = s.rounds.concat(extra.map((r) => ({ ...r, warmup: false, sig, started: false })));
     return true;
   }
-  return false;
+  // A new group name needs no new draw: rounds that are not fixed take it over.
+  let renamed = false;
+  for (const r of upcoming) {
+    if (!r.groups) continue;
+    r.groups.forEach((g, k) => { const name = s.settings.groupNames[k] || ''; if (g.name !== name) { g.name = name; renamed = true; } });
+  }
+  return renamed;
+}
+
+/**
+ * The last round with everyone together: groups off from the first round that is not fixed, and
+ * with `last` that round becomes the last one of the evening (one is added if the plan ran out).
+ */
+export function togetherFrom(s, { last = false } = {}) {
+  s.settings.groups = false;
+  if (last) {
+    const idx = firstOpen(s);
+    const frozen = s.rounds.filter(isFrozen);
+    const hasWarmup = frozen.length ? !!frozen[0].warmup : s.settings.warmup;
+    s.settings.rounds = Math.max(1, Math.min(20, idx + 1 - (hasWarmup ? 1 : 0)));
+  }
+  return firstOpen(s);
 }
 
 export const isUpcoming = (s, idx) => !!s.rounds[idx] && !s.rounds[idx].started;
@@ -180,28 +347,33 @@ export function redrawRound(s, idx) {
   if (!isUpcoming(s, idx)) return false;
   s.redraws++;
   const r = s.rounds[idx];
-  const players = present(s);
-  const one = drawRound({ players, courts: s.settings.courts, history: s.rounds.slice(0, idx), seed: hashSeed(s.seed, 'redraw', s.redraws) });
-  s.rounds[idx] = { ...r, courts: one.courts, sitOut: one.sitOut, sig: signature(s) };
+  const one = drawOne(s, s.rounds.slice(0, idx), hashSeed(s.seed, 'redraw', s.redraws));
+  const next = { ...r, courts: one.courts, sitOut: one.sitOut, sig: signature(s) };
+  if (one.groups) next.groups = one.groups; else delete next.groups;
+  s.rounds[idx] = next;
   redrawAfter(s, idx);
   return true;
 }
 
 function redrawAfter(s, idx) {
-  const players = present(s);
   const rest = s.rounds.length - idx - 1;
   if (rest <= 0) return;
-  const planned = planRounds({ players, courts: s.settings.courts, history: s.rounds.slice(0, idx + 1), count: rest, seed: hashSeed(s.seed, 'after', s.redraws) });
+  const planned = plan(s, s.rounds.slice(0, idx + 1), rest, hashSeed(s.seed, 'after', s.redraws));
   s.rounds = s.rounds.slice(0, idx + 1).concat(planned.map((r) => ({ ...r, warmup: false, sig: signature(s), started: false })));
 }
 
-/** Swap two players in an upcoming round; later rounds are drawn again. */
+/**
+ * Swap two players in an upcoming round; later rounds are drawn again. Only within one group:
+ * to play in the other group, a player moves group.
+ */
 export function swapPlayers(s, idx, a, b) {
   if (!isUpcoming(s, idx) || a === b) return false;
   const r = s.rounds[idx];
+  if (r.groups && groupIn(r, a) !== groupIn(r, b)) return false;
   const swap = (id) => (id === a ? b : id === b ? a : id);
   r.courts = r.courts.map((c) => c.map(swap));
   r.sitOut = r.sitOut.map(swap);
+  if (r.groups) r.groups = r.groups.map((g) => ({ ...g, sitOut: g.sitOut.map(swap) }));
   s.redraws++;
   redrawAfter(s, idx);
   return true;
