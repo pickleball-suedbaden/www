@@ -4,6 +4,7 @@
 // projector window that follows the control window without controls and without sound.
 
 import * as S from './session.js';
+import { courtsOf, groupIn } from './draw.js';
 import { t, setLang, getLang, STRINGS } from './i18n.js';
 import * as store from './store.js';
 import * as hub from './hub.js';
@@ -14,7 +15,7 @@ const VIEWS = ['checkin', 'board', 'rounds', 'settings', 'rules', 'signs'];
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-let state = store.load() || S.createState();
+let state = S.migrate(store.load()) || S.createState();
 let route = DISPLAY ? 'display' : (VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'checkin');
 setLang(store.loadLang());
 
@@ -31,7 +32,7 @@ setLang(store.loadLang());
 class Refused extends Error {}
 let hubMode = false, linked = false, server = { version: 0, state: null }, pending = [], flushing = false;
 const clone = (o) => JSON.parse(JSON.stringify(o));
-const fresh = (doc) => (doc && doc.state ? clone(doc.state) : S.createState(1000 + (doc ? doc.version : 0)));
+const fresh = (doc) => (doc && doc.state ? S.migrate(clone(doc.state)) : S.createState(1000 + (doc ? doc.version : 0)));
 
 function update(fn, { plan = true } = {}) {
   const step = (s) => { const r = fn(s); if (plan) S.ensurePlan(s); return r; };
@@ -111,7 +112,7 @@ store.subscribe((type) => {
   if (type === 'lang') { setLang(store.loadLang()); render(); return; }
   if (hubMode) return; // the hub is the source of truth
   if (type === 'wipe') { state = S.createState(); setLang('de'); resetLocalUi(); }
-  else state = store.load() || S.createState();
+  else state = S.migrate(store.load()) || S.createState();
   render();
 });
 
@@ -155,6 +156,8 @@ const roundName = (idx) => {
   const l = S.roundLabel(state, idx);
   return l.warmup ? t('warmup') : t('roundN', { n: l.n });
 };
+/** "from round 4" or "from the warm-up round": when a change takes effect. */
+const fromRound = (idx) => { const l = S.roundLabel(state, idx); return l.warmup ? t('fromWarmup') : t('fromRoundN', { n: l.n }); };
 const playerById = (id) => S.byId(state, id) || { code: '?', name: '' };
 const fmt = (ms) => {
   const s = Math.ceil(ms / 1000);
@@ -172,21 +175,45 @@ function personHtml(id, { roundIdx = -1, swappable = false } = {}) {
   return `<span class="person${gone}">${inner}</span>`;
 }
 
+/** A group's name: the one the host gave it, or the default in the current language. */
+const groupName = (k, raw) => raw || t(k ? 'group2Default' : 'group1Default');
+const settingName = (k) => groupName(k, state.settings.groupNames[k]);
+/** "Court 3" or "Courts 1–2" for a run of court numbers. */
+const courtRange = (a, b) => (a === b ? t('courtN', { n: a }) : t('courtRange', { a, b }));
+
+function courtsGrid(list, idx, opts) {
+  const p = (id) => personHtml(id, { roundIdx: idx, ...opts });
+  const courts = list.map((c) => `
+    <li class="court${c.group >= 0 ? ' g' + (c.group + 1) : ''}">
+      <div class="c-num"><span class="c-word">${esc(t('court'))}</span> ${c.num}</div>
+      <div class="team">${p(c.ids[0])}${p(c.ids[1])}</div>
+      <div class="vs">${esc(t('versus'))}</div>
+      <div class="team">${p(c.ids[2])}${p(c.ids[3])}</div>
+    </li>`).join('');
+  const n = list.length;
+  const cols = n <= 5 ? n : Math.ceil(n / 2);
+  return `<ol class="courts" style="--n:${n};--cols:${cols}">${courts}</ol>`;
+}
+
+function sitHtml(ids, idx, opts) {
+  if (!ids.length) return '';
+  return `<div class="sit"><span class="sit-label">${esc(t('sittingOut'))}</span>${ids.slice().sort(byCode).map((id) => personHtml(id, { roundIdx: idx, ...opts })).join('')}</div>`;
+}
+
+// With groups, each group is a block with its name, its courts and who sits out there; the blocks
+// stand side by side on a wide screen and one above the other on a phone.
 function courtsHtml(round, idx, opts = {}) {
   if (!round) return '';
-  const courts = round.courts.map((c, k) => `
-    <li class="court">
-      <div class="c-num"><span class="c-word">${esc(t('court'))}</span> ${k + 1}</div>
-      <div class="team">${personHtml(c[0], { roundIdx: idx, ...opts })}${personHtml(c[1], { roundIdx: idx, ...opts })}</div>
-      <div class="vs">${esc(t('versus'))}</div>
-      <div class="team">${personHtml(c[2], { roundIdx: idx, ...opts })}${personHtml(c[3], { roundIdx: idx, ...opts })}</div>
-    </li>`).join('');
-  const sit = round.sitOut.length
-    ? `<div class="sit"><span class="sit-label">${esc(t('sittingOut'))}</span>${round.sitOut.slice().sort(byCode).map((id) => personHtml(id, { roundIdx: idx, ...opts })).join('')}</div>`
-    : '';
-  const n = round.courts.length;
-  const cols = n <= 5 ? n : Math.ceil(n / 2);
-  return `<ol class="courts" style="--n:${n};--cols:${cols}">${courts}</ol>${sit}`;
+  const { courts, groups } = courtsOf(round);
+  if (!groups) return courtsGrid(courts, idx, opts) + sitHtml(round.sitOut, idx, opts);
+  return `<div class="grp-row">${groups.map((g) => {
+    const nums = g.list.map((c) => c.num);
+    return `<section class="grp g${g.k + 1}" style="--gn:${Math.max(1, g.list.length)}">
+      <h3 class="grp-h"><span class="grp-tag">${esc(groupName(g.k, g.name))}</span>${nums.length ? `<span class="grp-courts">${esc(courtRange(nums[0], nums[nums.length - 1]))}</span>` : ''}</h3>
+      ${g.list.length ? courtsGrid(g.list, idx, opts) : `<p class="grp-none">${esc(t('groupNoCourt'))}</p>`}
+      ${sitHtml(g.sitOut, idx, opts)}
+    </section>`;
+  }).join('')}</div>`;
 }
 
 function byCode(a, b) {
@@ -241,6 +268,7 @@ function boardHtml(now) {
       parts.push(b('skip', t('skip')));
       if (v.phase === 'play') parts.push(b('restart', t('restart')));
     }
+    if (state.settings.groups && v.phase !== 'done') parts.push(b('together', t('together')));
     parts.push(b('projector', t('projector')));
     ctrl = `<div class="b-ctrl">${parts.join('')}</div>`;
   }
@@ -291,40 +319,65 @@ function checkinHtml() {
   const expected = state.players.filter((p) => p.status === 'expected');
   const exp = ciExpected ? S.byId(state, ciExpected) : null;
   const last = lastIn ? S.byId(state, lastIn.id) : null; // the code the hub settled on
+  const grouped = state.settings.groups;
   const lvl = (n) => `<button type="button" class="ci-level" data-act="level" data-level="${n}"><span class="ci-ln">${n}</span>${esc(t('level' + n))}</button>`;
+  const grp = (g) => `<button type="button" class="ci-group g${g.k + 1}" data-act="group" data-group="${g.k + 1}"><span class="ci-gname">${esc(settingName(g.k))}</span>
+      <span class="ci-gmeta">${esc(t('groupMeta', { n: g.present, courts: g.courts ? courtRange(g.first, g.first + g.courts - 1) : t('groupNoCourts') }))}</span></button>`;
   const sex = (k) => `<button type="button" class="ci-sex" data-act="sex" data-sex="${k}" aria-pressed="${ciSex === k}"><span class="ci-sx">${k}</span>${esc(t('sex' + k))}</button>`;
-  const row = (p) => `<li><button type="button" class="pl-row" data-act="editPlayer" data-id="${p.id}">
-      <span class="pl-code">${esc(p.code || '·')}</span><span class="pl-name">${esc(p.name)}</span><span class="pl-lvl">${p.level ? esc(t('level' + p.level + 'Short')) : ''}</span></button></li>`;
+  const row = (p, move = false) => {
+    const g = S.groupOf(p);
+    const tag = grouped ? (p.groupAuto ? `<span class="pl-auto" title="${esc(t('autoTitle'))}">${esc(t('autoMark'))}</span>` : '')
+      : `<span class="pl-lvl">${p.level ? esc(t('level' + p.level + 'Short')) : ''}</span>`;
+    return `<li class="pl-li${move ? ' has-move' : ''}"><button type="button" class="pl-row" data-act="editPlayer" data-id="${p.id}">
+      <span class="pl-code">${esc(p.code || '·')}</span><span class="pl-name">${esc(p.name)}</span>${tag}</button>${move
+      ? `<button type="button" class="pl-move g${3 - g}" data-act="moveGroup" data-id="${p.id}" data-to="${3 - g}" aria-label="${esc(t('moveToLabel', { code: p.code, group: settingName(2 - g) }))}">→ ${esc(settingName(2 - g))}</button>` : ''}</li>`;
+  };
+  const list = (ps, { move = false, isGone = false } = {}) => `<ul class="pl${isGone ? ' is-gone' : ''}">${ps.map((p) => row(p, move)).join('')}</ul>`;
+  let hereHtml;
+  if (!here.length) hereHtml = `<h2 class="ci-h">${esc(t('playersTitle'))} (0)</h2><p class="muted">${esc(t('noPlayers'))}</p>`;
+  else if (!grouped) hereHtml = `<h2 class="ci-h">${esc(t('playersTitle'))} (${here.length})</h2>${list(here)}`;
+  else {
+    const info = S.groupInfo(state);
+    hereHtml = (info.auto ? `<p class="ci-auto">${esc(t('groupAuto', { n: info.auto }))} <button type="button" class="btn btn-quiet" data-act="confirmGroups">${esc(t('groupAutoOk'))}</button></p>` : '')
+      + [0, 1].map((k) => {
+        const mine = here.filter((p) => S.groupOf(p) === k + 1);
+        return `<h2 class="ci-h ci-gh"><span class="grp-tag g${k + 1}">${esc(settingName(k))}</span> (${mine.length})</h2>${mine.length ? list(mine, { move: true }) : `<p class="muted">${esc(t('noPlayers'))}</p>`}`;
+      }).join('');
+  }
+  const gcounts = grouped ? `<div class="ci-gcounts">${c.groups.map((g) => `<p class="g${g.k + 1}"><span class="grp-tag">${esc(settingName(g.k))}</span>
+      <span><b>${g.present}</b> ${esc(t('groupHere'))} · <b>${g.used}</b>/${g.courts} ${esc(t('groupCourtsShort'))} · <b>${g.sitting}</b> ${esc(t('countsSitting'))}</span></p>`).join('')}</div>` : '';
   return `<section class="ci">
     <p class="ci-counts">
       <span><b>${c.F}</b> ${esc(t('countsWomen'))}</span><span><b>${c.M}</b> ${esc(t('countsMen'))}</span><span><b>${c.X}</b> ${esc(t('countsEither'))}</span>
       <span><b>${c.courts}</b> ${esc(t('countsCourts'))}</span><span><b>${c.sitting}</b> ${esc(t('countsSitting'))}</span>
       ${c.expected ? `<span><b>${c.expected}</b> ${esc(t('countsExpected'))}</span>` : ''}
-    </p>
+    </p>${gcounts}
     ${last ? `<div class="ci-last"><span class="ci-lcode">${esc(last.code)}</span><span class="ci-lname">${esc(last.name)} ${esc(t('checkedIn'))}</span>
       <button type="button" class="btn btn-quiet" data-act="undoIn">${esc(t('undo'))}</button><button type="button" class="btn btn-quiet" data-act="editLast">${esc(t('edit'))}</button></div>` : ''}
     ${exp ? `<p class="ci-selected">${esc(t('selectedName', { name: exp.name }))} <button type="button" class="link" data-act="clearExp">${esc(t('clearSelection'))}</button></p>`
       : `<label class="ci-field"><span>${esc(t('nameLabel'))}</span><input id="ciName" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="24" placeholder="${esc(t('namePlaceholder'))}" value="${esc(ciName)}"></label>`}
     <div class="ci-sexes" role="group" aria-label="${esc(t('sexLabel'))}">${sex('F')}${sex('M')}${sex('X')}</div>
-    <p class="ci-hint">${esc(t('levelLabel'))}</p>
-    <div class="ci-levels ${ciSex ? '' : 'is-waiting'}">${lvl(1)}${lvl(2)}${lvl(3)}</div>
-    ${expected.length ? `<h2 class="ci-h">${esc(t('expectedTitle'))} <small>${esc(t('expectedHint'))}</small></h2>
+    ${grouped ? `<p class="ci-hint">${esc(t('groupLabel'))}</p>
+    <div class="ci-groups ${ciSex ? '' : 'is-waiting'}">${c.groups.map(grp).join('')}</div>`
+    : `<p class="ci-hint">${esc(t('levelLabel'))}</p>
+    <div class="ci-levels ${ciSex ? '' : 'is-waiting'}">${lvl(1)}${lvl(2)}${lvl(3)}</div>`}
+    ${expected.length ? `<h2 class="ci-h">${esc(t('expectedTitle'))} <small>${esc(t(grouped ? 'expectedHintGroups' : 'expectedHint'))}</small></h2>
       <div class="ci-exp">${expected.map((p) => `<button type="button" class="chip${p.id === ciExpected ? ' is-on' : ''}" data-act="pickExp" data-id="${p.id}">${esc(p.name)}</button>`).join('')}</div>` : ''}
     <p><button type="button" class="btn btn-quiet" data-act="paste">${esc(t('pasteNames'))}</button></p>
-    <h2 class="ci-h">${esc(t('playersTitle'))} (${here.length})</h2>
-    ${here.length ? `<ul class="pl">${here.map(row).join('')}</ul>` : `<p class="muted">${esc(t('noPlayers'))}</p>`}
-    ${gone.length ? `<h2 class="ci-h">${esc(t('goneTitle'))} (${gone.length})</h2><ul class="pl is-gone">${gone.map(row).join('')}</ul>` : ''}
+    ${hereHtml}
+    ${gone.length ? `<h2 class="ci-h">${esc(t('goneTitle'))} (${gone.length})</h2>${list(gone, { isGone: true })}` : ''}
   </section>`;
 }
 
-function doCheckIn(level) {
+/** Check in with the sex chosen above and a level (groups off) or a group (groups on). */
+function doCheckIn({ level = 0, group = 0 }) {
   if (!ciSex) { toast(t('pickSexFirst')); return; }
   const nameInput = $('#ciName');
   if (nameInput) ciName = nameInput.value;
   // A fixed id keeps this the same player if another device checks someone in at the same moment:
   // the hub then gives the next free code, and the card below shows the code the hub settled on.
   const newId = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const entry = { sex: ciSex, level, name: ciExpected ? '' : ciName, id: ciExpected, newId };
+  const entry = { sex: ciSex, level, group, name: ciExpected ? '' : ciName, id: ciExpected, newId };
   const wasExpected = !!ciExpected;
   const p = update((s) => S.checkIn(s, entry), { plan: false }); // throws if a hub refuses it
   ciSex = ''; ciName = ''; ciExpected = null;
@@ -337,12 +390,15 @@ function doCheckIn(level) {
 function editPlayer(id) {
   const p = S.byId(state, id);
   if (!p) return;
-  const draft = { sex: p.sex, level: p.level, name: p.name };
+  const grouped = state.settings.groups;
+  const draft = { sex: p.sex, level: p.level, name: p.name, group: p.code ? S.groupOf(p) : (p.group || 0) };
   const draw = () => openDialog(`<h2 class="d-h">${esc(t('editTitle', { code: p.code || p.name }))}</h2>
     <label class="ci-field"><span>${esc(t('editName'))}</span><input id="edName" type="text" maxlength="24" value="${esc(draft.name)}"></label>
     <div class="ci-sexes">${['F', 'M', 'X'].map((k) => `<button type="button" class="ci-sex" data-d="sex:${k}" aria-pressed="${draft.sex === k}"><span class="ci-sx">${k}</span>${esc(t('sex' + k))}</button>`).join('')}</div>
     <p class="d-small">${esc(t('codeChangeNote'))}</p>
-    <div class="d-levels">${[1, 2, 3].map((n) => `<button type="button" class="ci-level" data-d="level:${n}" aria-pressed="${draft.level === n}"><span class="ci-ln">${n}</span>${esc(t('level' + n))}</button>`).join('')}</div>
+    ${grouped ? `<p class="d-small">${esc(t('groupTitle'))}${p.groupAuto ? ' · ' + esc(t('autoTitle')) : ''}</p>
+    <div class="d-groups">${[0, 1].map((k) => `<button type="button" class="ci-group g${k + 1}" data-d="group:${k + 1}" aria-pressed="${draft.group === k + 1}"><span class="ci-gname">${esc(settingName(k))}</span></button>`).join('')}</div>`
+    : `<div class="d-levels">${[1, 2, 3].map((n) => `<button type="button" class="ci-level" data-d="level:${n}" aria-pressed="${draft.level === n}"><span class="ci-ln">${n}</span>${esc(t('level' + n))}</button>`).join('')}</div>`}
     <div class="d-btns">
       ${p.status === 'gone' ? `<button type="button" class="btn btn-quiet" data-d="back">${esc(t('markBack'))}</button>` : p.status === 'here' ? `<button type="button" class="btn btn-quiet" data-d="gone">${esc(t('markGone'))}</button>` : ''}
       <button type="button" class="btn btn-quiet btn-danger-q" data-d="remove">${esc(t('remove'))}</button>
@@ -353,14 +409,17 @@ function editPlayer(id) {
     draft.name = nameNow;
     if (d.startsWith('sex:')) { draft.sex = d.slice(4); draw(); return; }
     if (d.startsWith('level:')) { draft.level = Number(d.slice(6)); draw(); return; }
+    if (d.startsWith('group:')) { draft.group = Number(d.slice(6)); draw(); return; }
     if (d === 'cancel') { dlg.close(); return; }
     if (d === 'save') {
       const wasExpected = p.status === 'expected';
+      const moved = grouped && p.code && draft.group !== S.groupOf(p);
       dlg.close();
       update((s) => {
-        if (wasExpected && draft.sex && draft.level) S.checkIn(s, { id, sex: draft.sex, level: draft.level, name: draft.name });
-        else S.editPlayer(s, id, { sex: draft.sex || undefined, level: draft.level || undefined, name: draft.name });
+        if (wasExpected && draft.sex && (grouped ? draft.group : draft.level)) S.checkIn(s, { id, sex: draft.sex, level: draft.level, group: grouped ? draft.group : 0, name: draft.name });
+        else S.editPlayer(s, id, { sex: draft.sex || undefined, level: draft.level || undefined, name: draft.name, group: grouped ? draft.group : undefined });
       });
+      if (moved) toast(t('movedTo', { code: S.byId(state, id).code, group: settingName(draft.group - 1), from: fromRound(S.firstOpen(state)) }));
       return;
     }
     if (d === 'gone' || d === 'back') {
@@ -421,10 +480,16 @@ function roundsHtml() {
 function printRoundsHtml() {
   const date = new Date().toLocaleDateString(getLang() === 'de' ? 'de-DE' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'numeric', year: 'numeric' });
   const who = (id) => { const p = playerById(id); return `<b>${esc(p.code)}</b>${p.name ? ` <span>${esc(p.name)}</span>` : ''}`; };
+  const rows = (list) => list.map((c) => `<tr><th>${c.num}</th><td>${who(c.ids[0])} + ${who(c.ids[1])}</td><td class="pr-vs">${esc(t('versus'))}</td><td>${who(c.ids[2])} + ${who(c.ids[3])}</td></tr>`).join('');
+  const sit = (ids) => (ids.length ? `<tr class="pr-sit"><th></th><td colspan="3">${esc(t('sittingOut'))}: ${ids.slice().sort(byCode).map(who).join(', ')}</td></tr>` : '');
+  const body = (r) => {
+    const { courts, groups } = courtsOf(r);
+    if (!groups) return rows(courts) + sit(r.sitOut);
+    return groups.map((g) => `<tr class="pr-g g${g.k + 1}"><td colspan="4">${esc(groupName(g.k, g.name))}${g.list.length ? '' : ' · ' + esc(t('groupNoCourt'))}</td></tr>${rows(g.list)}${sit(g.sitOut)}`).join('');
+  };
   const rounds = state.rounds.map((r, i) => `<section class="pr-round">
       <h2>${esc(roundName(i))}</h2>
-      <table><tbody>${r.courts.map((c, k) => `<tr><th>${k + 1}</th><td>${who(c[0])} + ${who(c[1])}</td><td class="pr-vs">${esc(t('versus'))}</td><td>${who(c[2])} + ${who(c[3])}</td></tr>`).join('')}
-      ${r.sitOut.length ? `<tr class="pr-sit"><th></th><td colspan="3">${esc(t('sittingOut'))}: ${r.sitOut.slice().sort(byCode).map(who).join(', ')}</td></tr>` : ''}</tbody></table>
+      <table><tbody>${body(r)}</tbody></table>
     </section>`).join('');
   return `<div class="print-rounds">
     <header class="pr-head"><h1>${esc(t('printTitle'))} · Pickleball Südbaden e.V.</h1><p>${esc(date)}${state.sample ? ' · ' + esc(t('sample')) : ''}</p></header>
@@ -440,8 +505,15 @@ function shareText() {
   state.rounds.forEach((r, i) => {
     if (r.started && i !== state.timer.idx) return; // only what is still to come
     lines.push('', `*${roundName(i)}*`);
-    r.courts.forEach((c, k) => lines.push(`${t('courtN', { n: k + 1 })}: ${who(c[0])} + ${who(c[1])} – ${who(c[2])} + ${who(c[3])}`));
-    if (r.sitOut.length) lines.push(`${t('shareSit')}: ${r.sitOut.slice().sort(byCode).map(who).join(', ')}`);
+    const courtLines = (list) => list.forEach((c) => lines.push(`${t('courtN', { n: c.num })}: ${who(c.ids[0])} + ${who(c.ids[1])} – ${who(c.ids[2])} + ${who(c.ids[3])}`));
+    const sitLine = (ids) => { if (ids.length) lines.push(`${t('shareSit')}: ${ids.slice().sort(byCode).map(who).join(', ')}`); };
+    const { courts, groups } = courtsOf(r);
+    if (!groups) { courtLines(courts); sitLine(r.sitOut); return; }
+    for (const g of groups) {
+      lines.push(`_${groupName(g.k, g.name)}_`);
+      courtLines(g.list);
+      sitLine(g.sitOut);
+    }
   });
   lines.push('', t('shareFooter'));
   return lines.join('\n');
@@ -473,6 +545,8 @@ function onSwap(roundIdx, id) {
   if (swapSel.id === id) { swapSel = null; render(); return; }
   const a = swapSel.id, b = id;
   swapSel = null;
+  const round = state.rounds[roundIdx];
+  if (round && round.groups && groupIn(round, a) !== groupIn(round, b)) { toast(t('swapOtherGroup')); render(); return; }
   if (update((s) => S.swapPlayers(s, roundIdx, a, b), { plan: false })) {
     const A = playerById(a).code, B = playerById(b).code;
     const r = state.rounds[roundIdx];
@@ -508,6 +582,7 @@ function settingsHtml() {
         ${fit.fit !== fit.planned && fit.fit > 0 ? `<button type="button" class="btn btn-quiet" data-act="fitSet" data-fit="${fit.fit}">${esc(t('fitSet', { fit: fit.fit }))}</button>` : ''}</p>` : ''}
       <p class="muted">${esc(t('settingsNote'))}</p>
     </div>
+    ${groupsSetHtml()}
     <div class="set-group">
       <div class="set-row"><span class="set-label">${esc(t('language'))}</span>
         <div class="seg"><button type="button" data-act="lang" data-lang="de" aria-pressed="${getLang() === 'de'}">Deutsch</button><button type="button" data-act="lang" data-lang="en" aria-pressed="${getLang() === 'en'}">English</button></div></div>
@@ -533,6 +608,63 @@ function settingsHtml() {
       <p class="muted">${esc(t('privacy'))} <span data-offline></span></p>
     </div>
   </section>`;
+}
+
+// Two groups: on/off, names, the court split, and per group who is here, the courts and who sits out.
+function groupsSetHtml() {
+  const st = state.settings;
+  const on = st.groups;
+  const head = `<div class="set-row"><span class="set-label">${esc(t('groupsTitle'))}</span>
+      <button type="button" class="switch" role="switch" aria-checked="${on}" data-act="toggleGroups"><span></span></button></div>
+    <p class="muted">${esc(t('groupsHint'))}</p>`;
+  if (!on) return `<div class="set-group grp-set" id="groups">${head}</div>`;
+  const info = S.groupInfo(state);
+  const [a, b] = S.groupCourts(state);
+  const range = (g) => (g.courts ? courtRange(g.first, g.first + g.courts - 1) : t('groupNoCourts'));
+  const names = info.groups.map((g) => `<label class="ci-field grp-name g${g.k + 1}"><span><span class="grp-tag">${esc(t('groupN', { n: g.k + 1 }))}</span> ${esc(range(g))}</span>
+      <input type="text" data-group-name="${g.k}" maxlength="24" autocomplete="off" placeholder="${esc(t(g.k ? 'group2Default' : 'group1Default'))}" value="${esc(st.groupNames[g.k])}"></label>`).join('');
+  const split = st.courts >= 2 ? `<div class="set-row"><span class="set-label">${esc(t('groupCourtsFor', { name: settingName(0) }))}</span>
+      <div class="stepper"><button type="button" data-act="stepSplit" data-d="-1" aria-label="−" ${a <= 1 ? 'disabled' : ''}>−</button>
+      <output>${a}</output><button type="button" data-act="stepSplit" data-d="1" aria-label="+" ${b <= 1 ? 'disabled' : ''}>+</button></div></div>
+      <p class="muted grp-rest">${esc(t('groupCourtsRest', { name: settingName(1), n: b }))}</p>`
+    : `<p class="grp-warn">${esc(t('groupNeedsCourts'))}</p>`;
+  const table = `<table class="grp-table"><thead><tr><th></th><th>${esc(t('groupHere'))}</th><th>${esc(t('groupColCourts'))}</th><th>${esc(t('groupColSit'))}</th></tr></thead>
+    <tbody>${info.groups.map((g) => `<tr class="g${g.k + 1}"><th><span class="grp-tag">${esc(settingName(g.k))}</span></th><td>${g.present}</td><td>${g.used < g.courts ? `${g.used}/` : ''}${g.courts}</td><td>${g.sitting}</td></tr>`).join('')}</tbody></table>`;
+  const warns = [];
+  for (const g of info.groups) {
+    if (g.tooSmall) warns.push(t('groupTooSmall', { name: settingName(g.k), n: g.present }));
+    else if (g.present >= 4 && g.used < g.courts) warns.push(t('groupIdleCourts', { name: settingName(g.k), used: g.used, courts: g.courts }));
+  }
+  const sug = info.suggest;
+  return `<div class="set-group grp-set" id="groups">${head}
+    <div class="grp-names">${names}</div>
+    ${split}
+    ${table}
+    ${warns.map((w) => `<p class="grp-warn">${esc(w)}</p>`).join('')}
+    ${sug ? `<p class="set-fit">${esc(t('groupSuggest', { from: settingName(sug.from), to: settingName(sug.to), n: sug.saves }))}
+      <button type="button" class="btn btn-quiet" data-act="applySplit" data-split="${sug.groupCourts}">${esc(t('groupSuggestGo'))}</button></p>` : ''}
+    ${info.auto ? `<p class="ci-auto">${esc(t('groupAuto', { n: info.auto }))} <a class="btn btn-quiet" href="#checkin">${esc(t('groupAutoCheck'))}</a></p>` : ''}
+    <p class="muted">${esc(t('groupsNote'))}</p>
+    <p><button type="button" class="btn btn-navy" data-act="together">${esc(t('together'))}</button></p>
+  </div>`;
+}
+
+/** The last round with everyone together (groups off), after an in-app confirmation. */
+async function togetherDialog() {
+  const round = roundName(S.firstOpen(state));
+  if (!(await confirmBox(t('togetherConfirm', { round }), t('togetherGo')))) return;
+  update((s) => { S.togetherFrom(s, { last: true }); });
+  toast(t('togetherDone', { round }));
+}
+
+/** Move a player to the other group from the next open round, with an undo in the message. */
+function moveGroup(id, to) {
+  const p = S.byId(state, id);
+  if (!p) return;
+  const from = S.groupOf(p);
+  update((s) => { S.setGroup(s, id, to); });
+  toast(t('movedTo', { code: p.code, group: settingName(to - 1), from: fromRound(S.firstOpen(state)) }),
+    { label: t('undo'), fn: () => update((s) => { S.setGroup(s, id, from); }) });
 }
 
 function sampleDialog() {
@@ -622,7 +754,14 @@ function render() {
     main.innerHTML = checkinHtml();
     if (focused && $('#ciName')) $('#ciName').focus();
   } else if (route === 'rounds') main.innerHTML = roundsHtml();
-  else if (route === 'settings') { main.innerHTML = settingsHtml(); updateOffline(); }
+  else if (route === 'settings') {
+    // Keep a group name the host is typing when another device changes the session meanwhile.
+    const a = document.activeElement;
+    const typing = a && a.dataset && a.dataset.groupName !== undefined ? { k: a.dataset.groupName, v: a.value } : null;
+    main.innerHTML = settingsHtml(); updateOffline();
+    const box = typing && main.querySelector(`[data-group-name="${typing.k}"]`);
+    if (box) { box.value = typing.v; box.focus(); }
+  }
   else if (route === 'rules') main.innerHTML = rulesHtml();
   else if (route === 'signs') main.innerHTML = signsHtml();
 }
@@ -644,9 +783,10 @@ document.addEventListener('input', (e) => {
 });
 document.addEventListener('change', (e) => {
   if (e.target.id === 'endTime') { const v = e.target.value; update((s) => S.setSetting(s, 'endTime', v), { plan: false }); }
+  if (e.target.dataset.groupName !== undefined) { const k = Number(e.target.dataset.groupName), v = e.target.value; update((s) => S.setGroupName(s, k, v)); }
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && e.target.id === 'ciName') e.target.blur();
+  if (e.key === 'Enter' && (e.target.id === 'ciName' || e.target.dataset.groupName !== undefined)) e.target.blur();
 });
 
 document.addEventListener('pointerdown', () => { if (!DISPLAY) unlockAudio(); }, { capture: true });
@@ -664,9 +804,12 @@ async function onAction(el) {
     case 'sex':
       ciSex = ciSex === el.dataset.sex ? '' : el.dataset.sex;
       for (const b of document.querySelectorAll('.ci .ci-sex')) b.setAttribute('aria-pressed', String(b.dataset.sex === ciSex));
-      $('.ci-levels').classList.toggle('is-waiting', !ciSex);
+      $('.ci-levels, .ci-groups').classList.toggle('is-waiting', !ciSex);
       break;
-    case 'level': doCheckIn(Number(el.dataset.level)); break;
+    case 'level': doCheckIn({ level: Number(el.dataset.level) }); break;
+    case 'group': doCheckIn({ group: Number(el.dataset.group) }); break;
+    case 'moveGroup': moveGroup(el.dataset.id, Number(el.dataset.to)); break;
+    case 'confirmGroups': update((s) => S.confirmGroups(s), { plan: false }); break;
     case 'undoIn':
       if (lastIn) {
         const { id, wasExpected } = lastIn;
@@ -715,6 +858,16 @@ async function onAction(el) {
     }
 
     case 'step': { const key = el.dataset.key, d = Number(el.dataset.d); update((s) => S.setSetting(s, key, s.settings[key] + d)); break; }
+    case 'toggleGroups': {
+      const on = !state.settings.groups;
+      const auto = update((s) => S.setGroups(s, on));
+      const from = fromRound(S.firstOpen(state));
+      toast(on ? t('groupsOnFrom', { from }) + (auto ? ' ' + t('groupAutoShort', { n: auto }) : '') : t('groupsOffFrom', { from }));
+      break;
+    }
+    case 'stepSplit': { const d = Number(el.dataset.d); update((s) => S.setSetting(s, 'groupCourts', S.groupCourts(s)[0] + d)); break; }
+    case 'applySplit': { const a = Number(el.dataset.split); update((s) => S.setSetting(s, 'groupCourts', a)); toast(t('groupSplitDone', { from: fromRound(S.firstOpen(state)) })); break; }
+    case 'together': togetherDialog(); break;
     case 'toggleWarmup': { const on = !state.settings.warmup; update((s) => S.setSetting(s, 'warmup', on)); break; }
     case 'fitSet': { const fit = Number(el.dataset.fit); update((s) => S.setSetting(s, 'rounds', s.settings.rounds + fit - S.roundsThatFit(s, now).planned)); break; }
     case 'soundDevice': setSound(!soundOn()); if (soundOn()) unlockAudio(); render(); break;

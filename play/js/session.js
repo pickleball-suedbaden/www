@@ -381,8 +381,8 @@ export function swapPlayers(s, idx, a, b) {
 
 export function roundLabel(s, idx) {
   const r = s.rounds[idx];
-  if (!r) return { warmup: false, n: idx + 1 };
   const warm = s.rounds[0] && s.rounds[0].warmup ? 1 : 0;
+  if (!r) return { warmup: false, n: idx + 1 - warm }; // a round still to be added
   return { warmup: !!r.warmup, n: idx + 1 - warm };
 }
 
