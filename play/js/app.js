@@ -520,6 +520,24 @@ function shareText() {
   return lines.join('\n');
 }
 
+/**
+ * Save the whole session as a file. Touch devices (iPad, phone) get the share sheet, so the file can
+ * go by AirDrop to the laptop or into Files; a laptop, or a browser that cannot share files, downloads it.
+ */
+async function saveFile() {
+  const { name, text } = S.exportFile(state, Date.now());
+  let file = null;
+  try { file = new File([text], name, { type: 'application/json' }); } catch (e) { file = null; }
+  if (file && navigator.maxTouchPoints > 0 && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  toast(t('saveFileDone', { name }));
+}
+
 function shareDialog() {
   S.ensurePlan(state);
   const text = shareText();
@@ -601,6 +619,11 @@ function settingsHtml() {
       <h2 class="ci-h">${esc(t('testing'))}</h2>
       <p class="muted">${esc(t('fillSampleHint'))}</p>
       <p><button type="button" class="btn btn-quiet" data-act="sample" ${started ? 'disabled' : ''}>${esc(t('fillSample'))}</button>${started ? ` <small class="muted">${esc(t('fillSampleBlocked'))}</small>` : ''}</p>
+    </div>
+    <div class="set-group">
+      <h2 class="ci-h">${esc(t('saveFileTitle'))}</h2>
+      <p class="muted">${esc(t('saveFileHint'))}</p>
+      <p><button type="button" class="btn btn-navy" data-act="saveFile" ${state.players.length ? '' : 'disabled'}>${esc(t('saveFile'))}</button></p>
     </div>
     <div class="set-group is-end">
       <h2 class="ci-h">${esc(t('endSession'))}</h2>
@@ -890,6 +913,7 @@ async function onAction(el) {
       break;
     case 'print': window.print(); break;
     case 'share': shareDialog(); break;
+    case 'saveFile': saveFile(); break;
     case 'signs': signsUpTo = Math.max(1, Math.min(8, (signsUpTo || state.settings.courts) + Number(el.dataset.d))); render(); break;
     default: break;
   }

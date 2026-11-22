@@ -41,6 +41,18 @@ export function migrate(s) {
   return s;
 }
 
+/**
+ * The whole session as a file for the club's records (who came, the groups, the rounds). The name
+ * carries the day the first round started on this device's clock, else the day of `now`.
+ */
+export function exportFile(s, now = Date.now()) {
+  const first = (s.rounds || []).find((r) => r.startedAt);
+  const d = new Date(first ? first.startedAt : now);
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const doc = { app: 'pbsb-spieltreff', exported: new Date(now).toISOString(), state: s };
+  return { name: `spieltreff-${day}.json`, text: JSON.stringify(doc, null, 1) };
+}
+
 // ---------- players ----------
 
 export const present = (s) => s.players.filter((p) => p.status === 'here');
