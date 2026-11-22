@@ -224,7 +224,21 @@ export function counts(s) {
 }
 
 /** Sample players for testing and for a generic printed backup schedule. */
-export function fillSample(s, women = 10, men = 10) {
+// First names for sample players, 32 of each so the sample dialog's maximum never runs out.
+const SAMPLE_F = ['Anna', 'Lena', 'Julia', 'Sophie', 'Laura', 'Marie', 'Hannah', 'Lea', 'Lisa', 'Sarah', 'Katharina', 'Johanna',
+  'Clara', 'Emma', 'Mia', 'Nina', 'Paula', 'Greta', 'Ida', 'Carla', 'Elif', 'Sofia', 'Ines', 'Jana', 'Theresa', 'Franziska',
+  'Miriam', 'Petra', 'Sabine', 'Ursula', 'Bärbel', 'Chiara'];
+const SAMPLE_M = ['Lukas', 'Jonas', 'Felix', 'Max', 'Paul', 'Leon', 'David', 'Tobias', 'Simon', 'Jan', 'Florian', 'Matthias',
+  'Stefan', 'Thomas', 'Michael', 'Andreas', 'Moritz', 'Jakob', 'Elias', 'Noah', 'Emre', 'Luca', 'Marco', 'Niklas', 'Philipp',
+  'Sebastian', 'Johannes', 'Martin', 'Uwe', 'Jürgen', 'Kai', 'Mehmet'];
+
+function shuffled(list, rand) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+export function fillSample(s, women = 10, men = 10, rand = Math.random) {
   s.players = []; s.nextId = 1; s.rounds = [];
   s.timer = { idx: -1, phase: 'idle', playEnd: 0, changeEnd: 0, pausedAt: 0 };
   // Alternate so the codes come out F1, M1, F2, M2 … like a real arrival order;
@@ -233,9 +247,10 @@ export function fillSample(s, women = 10, men = 10) {
   const g1 = s.settings.groups ? 4 * groupCourts(s)[0] : 0;
   let k = 0;
   const group = () => (s.settings.groups ? (k++ < g1 ? 1 : 2) : 0);
+  const fNames = shuffled(SAMPLE_F, rand), mNames = shuffled(SAMPLE_M, rand);
   for (let i = 0; i < Math.max(women, men); i++) {
-    if (i < women) checkIn(s, { sex: 'F', level: s.settings.groups ? 0 : i % 4 === 1 ? 2 : 1, group: group() });
-    if (i < men) checkIn(s, { sex: 'M', level: s.settings.groups ? 0 : i % 4 === 2 ? 2 : 1, group: group() });
+    if (i < women) checkIn(s, { sex: 'F', level: s.settings.groups ? 0 : i % 4 === 1 ? 2 : 1, group: group(), name: fNames[i % fNames.length] });
+    if (i < men) checkIn(s, { sex: 'M', level: s.settings.groups ? 0 : i % 4 === 2 ? 2 : 1, group: group(), name: mNames[i % mNames.length] });
   }
   s.sample = true;
 }
