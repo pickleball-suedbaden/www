@@ -7,7 +7,7 @@
 // whatever is on the laptop, so a plain reload always gets the newest version.
 // Bump VERSION whenever a cached file changes.
 
-const VERSION = 'play-v9';
+const VERSION = 'play-v10';
 const SITE = /(^|\.)pickleball-suedbaden\.de$/.test(self.location.hostname);
 const FILES = [
   './',

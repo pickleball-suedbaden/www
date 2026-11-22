@@ -356,7 +356,7 @@ function checkinHtml() {
     ${last ? `<div class="ci-last"><span class="ci-lcode">${esc(last.code)}</span><span class="ci-lname">${esc(last.name)} ${esc(t('checkedIn'))}</span>
       <button type="button" class="btn btn-quiet" data-act="undoIn">${esc(t('undo'))}</button><button type="button" class="btn btn-quiet" data-act="editLast">${esc(t('edit'))}</button></div>` : ''}
     ${exp ? `<p class="ci-selected">${esc(t('selectedName', { name: exp.name }))} <button type="button" class="link" data-act="clearExp">${esc(t('clearSelection'))}</button></p>`
-      : `<label class="ci-field"><span>${esc(t('nameLabel'))}</span><input id="ciName" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="done" maxlength="24" placeholder="${esc(t('namePlaceholder'))}" value="${esc(ciName)}"></label>`}
+      : `<label class="ci-field"><span>${esc(t('nameLabel'))}</span><input id="ciName" type="text" autocomplete="off" autocapitalize="words" autocorrect="off" spellcheck="false" enterkeyhint="done" maxlength="24" placeholder="${esc(t('namePlaceholder'))}" value="${esc(ciName)}"></label>`}
     <div class="ci-sexes" role="group" aria-label="${esc(t('sexLabel'))}">${sex('F')}${sex('M')}${sex('X')}</div>
     ${grouped ? `<p class="ci-hint">${esc(t('groupLabel'))}</p>
     <div class="ci-groups ${ciSex ? '' : 'is-waiting'}">${c.groups.map(grp).join('')}</div>`
@@ -394,7 +394,7 @@ function editPlayer(id) {
   const grouped = state.settings.groups;
   const draft = { sex: p.sex, level: p.level, name: p.name, group: p.code ? S.groupOf(p) : (p.group || 0) };
   const draw = () => openDialog(`<h2 class="d-h">${esc(t('editTitle', { code: p.code || p.name }))}</h2>
-    <label class="ci-field"><span>${esc(t('editName'))}</span><input id="edName" type="text" maxlength="24" value="${esc(draft.name)}"></label>
+    <label class="ci-field"><span>${esc(t('editName'))}</span><input id="edName" type="text" autocomplete="off" autocapitalize="words" autocorrect="off" spellcheck="false" enterkeyhint="done" maxlength="24" value="${esc(draft.name)}"></label>
     <div class="ci-sexes">${['F', 'M', 'X'].map((k) => `<button type="button" class="ci-sex" data-d="sex:${k}" aria-pressed="${draft.sex === k}"><span class="ci-sx">${k}</span>${esc(t('sex' + k))}</button>`).join('')}</div>
     <p class="d-small">${esc(t('codeChangeNote'))}</p>
     ${grouped ? `<p class="d-small">${esc(t('groupTitle'))}${p.groupAuto ? ' · ' + esc(t('autoTitle')) : ''}</p>
@@ -646,7 +646,7 @@ function groupsSetHtml() {
   const [a, b] = S.groupCourts(state);
   const range = (g) => (g.courts ? courtRange(g.first, g.first + g.courts - 1) : t('groupNoCourts'));
   const names = info.groups.map((g) => `<label class="ci-field grp-name g${g.k + 1}"><span><span class="grp-tag">${esc(t('groupN', { n: g.k + 1 }))}</span> ${esc(range(g))}</span>
-      <input type="text" data-group-name="${g.k}" maxlength="24" autocomplete="off" placeholder="${esc(t(g.k ? 'group2Default' : 'group1Default'))}" value="${esc(st.groupNames[g.k])}"></label>`).join('');
+      <input type="text" data-group-name="${g.k}" maxlength="24" autocomplete="off" autocapitalize="words" placeholder="${esc(t(g.k ? 'group2Default' : 'group1Default'))}" value="${esc(st.groupNames[g.k])}"></label>`).join('');
   const split = st.courts >= 2 ? `<div class="set-row"><span class="set-label">${esc(t('groupCourtsFor', { name: settingName(0) }))}</span>
       <div class="stepper"><button type="button" data-act="stepSplit" data-d="-1" aria-label="−" ${a <= 1 ? 'disabled' : ''}>−</button>
       <output>${a}</output><button type="button" data-act="stepSplit" data-d="1" aria-label="+" ${b <= 1 ? 'disabled' : ''}>+</button></div></div>
